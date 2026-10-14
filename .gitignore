@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+compile_commands.json
+
+# Tooling and caches
+.cache/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Temporary test bundles and mock data
+/spiflash_mock/
+/tmp_test/

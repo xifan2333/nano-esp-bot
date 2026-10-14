@@ -1,0 +1,10 @@
+[tools]
+hk = "2.6.0"
+
+[tasks.check]
+description = "Run all checks via hk"
+run = "hk check --all"
+
+[tasks.fix]
+description = "Auto-fix issues via hk"
+run = "hk fix"
