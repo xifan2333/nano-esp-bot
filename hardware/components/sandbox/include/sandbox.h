@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+#include "lua.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -61,6 +63,13 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result);
 esp_err_t sandbox_break(void);
 
 /**
+ * @brief Check if an abort/break has been requested for the running sandbox.
+ *
+ * @return true if abort requested, false otherwise.
+ */
+bool sandbox_is_abort_requested(void);
+
+/**
  * @brief Query current sandbox memory metrics.
  *
  * @param out_used Pointer to receive currently allocated bytes (optional, may be NULL).
@@ -68,6 +77,18 @@ esp_err_t sandbox_break(void);
  * @param out_limit Pointer to receive maximum allowed bytes (optional, may be NULL).
  */
 void sandbox_get_mem_stats(size_t *out_used, size_t *out_peak, size_t *out_limit);
+
+/**
+ * @brief Register a C module into Lua's module system.
+ *
+ * Preloads the module so require(name) works, and makes it available globally.
+ * Registered modules persist across sandbox_reset() calls.
+ *
+ * @param name Module name (e.g. "gpio", "delay").
+ * @param open_fn lua_CFunction module opener (e.g. luaopen_gpio).
+ * @return esp_err_t ESP_OK on success.
+ */
+esp_err_t sandbox_register_module(const char *name, lua_CFunction open_fn);
 
 /**
  * @brief Register sandbox JSON-RPC 2.0 methods (sandbox.eval, sandbox.reset, sandbox.info).

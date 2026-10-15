@@ -10,6 +10,8 @@
 #include "ledger.h"
 #include "rpc.h"
 #include "sandbox.h"
+#include "chal_gpio.h"
+#include "chal_delay.h"
 
 static const char *TAG = "nano-core";
 
@@ -45,5 +47,9 @@ void app_main(void)
     rpc_set_break_callback((rpc_break_callback_t)sandbox_break);
     ESP_ERROR_CHECK(sandbox_register_rpc());
 
-    ESP_LOGI(TAG, "Micro-Supervisor is active. Control plane & Lua sandbox ready.");
+    /* 4. Register C-HAL Hardware Modules into Lua Runtime (ESP-Claw Model) */
+    ESP_ERROR_CHECK(sandbox_register_module("gpio", luaopen_gpio));
+    ESP_ERROR_CHECK(sandbox_register_module("delay", luaopen_delay));
+
+    ESP_LOGI(TAG, "Micro-Supervisor is active. Control plane, Lua sandbox & C-HAL ready.");
 }
