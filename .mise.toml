@@ -1,10 +1,41 @@
 [tools]
 hk = "2.6.0"
+python = "3.11"
+
+[env]
+_.source = { path = "scripts/export-idf.sh", tools = true }
 
 [tasks.check]
-description = "Run all checks via hk"
+description = "Check all files via hk"
 run = "hk check --all"
 
+[tasks."check:plan"]
+description = "Preview hk check execution plan for modified files"
+run = "hk check --plan"
+
+[tasks."check:changed"]
+description = "Check modified files via native hk check"
+run = "hk check"
+
 [tasks.fix]
-description = "Auto-fix issues via hk"
+description = "Auto-fix issues in modified files via hk"
 run = "hk fix"
+
+[tasks."fix:all"]
+description = "Auto-fix issues in all files via hk"
+run = "hk fix --all"
+
+[tasks."hw:build"]
+description = "Build ESP32-S3 firmware under hardware/"
+dir = "hardware"
+run = "idf.py build"
+
+[tasks."hw:flash"]
+description = "Flash ESP32-S3 firmware"
+dir = "hardware"
+run = "idf.py flash"
+
+[tasks."hw:monitor"]
+description = "Monitor ESP32-S3 serial output"
+dir = "hardware"
+run = "idf.py monitor"
