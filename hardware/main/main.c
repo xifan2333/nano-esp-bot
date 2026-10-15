@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "ledger.h"
 #include "rpc.h"
+#include "sandbox.h"
 
 static const char *TAG = "nano-core";
 
@@ -33,11 +34,16 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Free heap: %" PRIu32 " bytes", esp_get_free_heap_size());
 
-    // 1. Initialize Hardware Resource Ledger
+    /* 1. Initialize Hardware Resource Ledger */
     ESP_ERROR_CHECK(ledger_init());
 
-    // 2. Initialize JSON-RPC 2.0 Engine & USB Listener
+    /* 2. Initialize JSON-RPC 2.0 Engine & USB Listener */
     ESP_ERROR_CHECK(rpc_init());
 
-    ESP_LOGI(TAG, "Micro-Supervisor is active. Control plane listening.");
+    /* 3. Initialize Lua 5.4 VM Sandbox, Link Break Callback & Register RPC */
+    ESP_ERROR_CHECK(sandbox_init());
+    rpc_set_break_callback((rpc_break_callback_t)sandbox_break);
+    ESP_ERROR_CHECK(sandbox_register_rpc());
+
+    ESP_LOGI(TAG, "Micro-Supervisor is active. Control plane & Lua sandbox ready.");
 }

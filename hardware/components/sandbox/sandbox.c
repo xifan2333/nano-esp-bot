@@ -8,6 +8,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "ledger.h"
+#include "rpc.h"
+#include "cJSON.h"
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
@@ -285,5 +287,122 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result)
     lua_settop(s_L, 0);
 
     xSemaphoreGive(s_sandbox_mutex);
+    return ESP_OK;
+}
+
+static cJSON *sandbox_rpc_eval_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    const char *code = NULL;
+    if (params != NULL) {
+        if (cJSON_IsString(params)) {
+            code = params->valuestring;
+        } else if (cJSON_IsObject(params)) {
+            const cJSON *item = cJSON_GetObjectItem(params, "code");
+            if (item != NULL && cJSON_IsString(item)) {
+                code = item->valuestring;
+            }
+        } else if (cJSON_IsArray(params)) {
+            const cJSON *item = cJSON_GetArrayItem(params, 0);
+            if (item != NULL && cJSON_IsString(item)) {
+                code = item->valuestring;
+            }
+        }
+    }
+
+    if (code == NULL || strlen(code) == 0) {
+        *error_code = RPC_ERR_INVALID_PARAMS;
+        snprintf(error_msg, error_msg_len, "Missing required string parameter 'code'");
+        return NULL;
+    }
+
+    sandbox_result_t res;
+    esp_err_t err = sandbox_eval(code, &res);
+    if (err != ESP_OK) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Sandbox execution failure (0x%x)", err);
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddBoolToObject(result, "ok", res.success);
+    if (res.success) {
+        cJSON_AddStringToObject(result, "value", res.output);
+    } else {
+        cJSON_AddStringToObject(result, "error", res.output);
+    }
+    cJSON_AddNumberToObject(result, "mem_used", (double)res.mem_used);
+    cJSON_AddNumberToObject(result, "mem_peak", (double)res.mem_peak);
+    cJSON_AddNumberToObject(result, "insn_count", (double)res.insn_count);
+
+    return result;
+}
+
+static cJSON *sandbox_rpc_reset_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    (void)params;
+    esp_err_t err = sandbox_reset();
+    if (err != ESP_OK) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to reset sandbox VM (0x%x)", err);
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddBoolToObject(result, "reset", true);
+    return result;
+}
+
+static cJSON *sandbox_rpc_info_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    (void)params;
+    size_t used = 0, peak = 0, limit = 0;
+    sandbox_get_mem_stats(&used, &peak, &limit);
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(result, "lua_version", LUA_VERSION);
+    cJSON_AddNumberToObject(result, "mem_used", (double)used);
+    cJSON_AddNumberToObject(result, "mem_peak", (double)peak);
+    cJSON_AddNumberToObject(result, "mem_limit", (double)limit);
+    cJSON_AddNumberToObject(result, "insn_quota", (double)s_insn_quota);
+
+    return result;
+}
+
+esp_err_t sandbox_register_rpc(void)
+{
+    esp_err_t err = rpc_register_method("sandbox.eval", sandbox_rpc_eval_handler);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = rpc_register_method("sandbox.reset", sandbox_rpc_reset_handler);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = rpc_register_method("sandbox.info", sandbox_rpc_info_handler);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Registered RPC methods: sandbox.eval, sandbox.reset, sandbox.info");
     return ESP_OK;
 }

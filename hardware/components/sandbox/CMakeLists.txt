@@ -32,5 +32,5 @@ set(LUA_SRCS
 idf_component_register(
     SRCS "sandbox.c" ${LUA_SRCS}
     INCLUDE_DIRS "include" "lua"
-    PRIV_REQUIRES esp_system log ledger
+    PRIV_REQUIRES esp_system log ledger json rpc
 )

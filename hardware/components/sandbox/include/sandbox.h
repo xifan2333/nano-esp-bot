@@ -69,6 +69,13 @@ esp_err_t sandbox_break(void);
  */
 void sandbox_get_mem_stats(size_t *out_used, size_t *out_peak, size_t *out_limit);
 
+/**
+ * @brief Register sandbox JSON-RPC 2.0 methods (sandbox.eval, sandbox.reset, sandbox.info).
+ *
+ * @return esp_err_t ESP_OK on success.
+ */
+esp_err_t sandbox_register_rpc(void);
+
 #ifdef __cplusplus
 }
 #endif
