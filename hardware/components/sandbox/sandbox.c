@@ -360,6 +360,49 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result)
     return ESP_OK;
 }
 
+esp_err_t sandbox_eval_file(const char *filepath, sandbox_result_t *out_result)
+{
+    if (filepath == NULL || out_result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(out_result, 0, sizeof(*out_result));
+
+    FILE *f = fopen(filepath, "r");
+    if (f == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return ESP_FAIL;
+    }
+    long fsize = ftell(f);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    if (fsize < 0 || fsize > 64 * 1024) {
+        fclose(f);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    char *code = malloc((size_t)fsize + 1);
+    if (code == NULL) {
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t read_bytes = fread(code, 1, (size_t)fsize, f);
+    code[read_bytes] = '\0';
+    fclose(f);
+
+    esp_err_t err = sandbox_eval(code, out_result);
+    free(code);
+    return err;
+}
+
 static cJSON *sandbox_rpc_eval_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
 {
     const char *code = NULL;
