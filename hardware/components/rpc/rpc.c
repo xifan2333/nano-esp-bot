@@ -19,7 +19,21 @@ static const char *TAG = "rpc";
 
 #define RPC_LINE_BUF_SIZE    2048
 #define RPC_MAX_METHODS      32
-#define RPC_TASK_STACK_SIZE  4096
+/*
+ * The control plane task must be sized for the deepest handler it can run.
+ *
+ * RPC method handlers execute *inline* on this task, and `sandbox.eval` runs the
+ * full Lua pipeline here: the expression pre-pass buffer, the recursive-descent
+ * parser (LexState/FuncState/MBuffer live on the C stack) and the VM call path.
+ * A 4096 byte stack overflowed during on-hardware verification and silently
+ * corrupted the adjacent heap, which then faulted later inside
+ * usb_serial_jtag_write_bytes() (assert: pxQueue->uxItemSize == 0).
+ *
+ * Keep this comfortably generous; stack high-water telemetry is exposed through
+ * system.info -> rpc_stack_headroom so the margin can be verified on real
+ * hardware instead of guessed.
+ */
+#define RPC_TASK_STACK_SIZE  16384
 #define RPC_TASK_PRIORITY    10
 
 typedef struct {
@@ -32,6 +46,7 @@ static size_t s_method_count = 0;
 static SemaphoreHandle_t s_rpc_mutex = NULL;
 static rpc_break_callback_t s_break_cb = NULL;
 static bool s_initialized = false;
+static TaskHandle_t s_rpc_task_handle = NULL;
 
 static void rpc_send_raw(const char *str)
 {
@@ -69,6 +84,20 @@ static void rpc_send_error_raw(const cJSON *id, int code, const char *message)
         free(rendered);
     }
     cJSON_Delete(resp);
+}
+
+/**
+ * @brief Remaining stack headroom of the control-plane task, in bytes.
+ *
+ * Only meaningful once the task has started running; returns 0 before that.
+ * Exposed through system.info so the real margin can be checked on hardware.
+ */
+static uint32_t rpc_get_task_stack_headroom(void)
+{
+    if (s_rpc_task_handle == NULL) {
+        return 0;
+    }
+    return (uint32_t)uxTaskGetStackHighWaterMark(s_rpc_task_handle);
 }
 
 static cJSON *handle_system_ping(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
@@ -117,6 +146,8 @@ static cJSON *handle_system_info(const cJSON *params, int *error_code, char *err
     cJSON_AddNumberToObject(res, "min_free_heap", (double)esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(res, "claimed_pins", (double)ledger_get_claimed_count(LEDGER_OWNER_NONE));
     cJSON_AddNumberToObject(res, "uptime_ms", (double)(esp_timer_get_time() / 1000));
+    cJSON_AddNumberToObject(res, "rpc_stack_total", (double)RPC_TASK_STACK_SIZE);
+    cJSON_AddNumberToObject(res, "rpc_stack_headroom", (double)rpc_get_task_stack_headroom());
     cJSON_AddStringToObject(res, "state", "ready");
     return res;
 }
@@ -232,7 +263,7 @@ static void rpc_task(void *pvParameters)
     size_t line_len = 0;
     uint8_t chunk[64];
 
-    ESP_LOGI(TAG, "RPC listening task started on Core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "RPC listening task started on Core %d (stack %d B)", xPortGetCoreID(), RPC_TASK_STACK_SIZE);
 
     while (1) {
         int n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), pdMS_TO_TICKS(50));
@@ -378,7 +409,7 @@ esp_err_t rpc_init(void)
         RPC_TASK_STACK_SIZE,
         NULL,
         RPC_TASK_PRIORITY,
-        NULL,
+        &s_rpc_task_handle,
         0
     );
 

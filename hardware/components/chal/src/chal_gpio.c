@@ -45,13 +45,13 @@ static int l_gpio_mode(lua_State *L)
     /* Safety check with Resource Ledger */
     esp_err_t err = ledger_claim_pin((int)pin, LEDGER_OWNER_SCRIPT, lmode, "lua_gpio");
     if (err != ESP_OK) {
-        return luaL_error(L, "pin %d rejected by ledger (err 0x%x - pin may be reserved by flash/psram/usb or already claimed)", (int)pin, err);
+        return luaL_error(L, "pin %d rejected by ledger (err %d: reserved by flash/psram/usb or already claimed)", (int)pin, (int)err);
     }
 
     err = gpio_config(&io_conf);
     if (err != ESP_OK) {
         ledger_release_pin((int)pin, LEDGER_OWNER_SCRIPT);
-        return luaL_error(L, "gpio_config failed for pin %d (0x%x)", (int)pin, err);
+        return luaL_error(L, "gpio_config failed for pin %d (err %d)", (int)pin, (int)err);
     }
 
     ESP_LOGD(TAG, "Configured GPIO %d as %s", (int)pin, mode_str);
@@ -75,7 +75,7 @@ static int l_gpio_write(lua_State *L)
 
     esp_err_t err = gpio_set_level((gpio_num_t)pin, level);
     if (err != ESP_OK) {
-        return luaL_error(L, "gpio_set_level failed for pin %d (0x%x)", (int)pin, err);
+        return luaL_error(L, "gpio_set_level failed for pin %d (err %d)", (int)pin, (int)err);
     }
 
     lua_pushboolean(L, 1);
@@ -105,7 +105,7 @@ static int l_gpio_toggle(lua_State *L)
     int new_level = current ? 0 : 1;
     esp_err_t err = gpio_set_level((gpio_num_t)pin, new_level);
     if (err != ESP_OK) {
-        return luaL_error(L, "gpio_set_level failed for pin %d (0x%x)", (int)pin, err);
+        return luaL_error(L, "gpio_set_level failed for pin %d (err %d)", (int)pin, (int)err);
     }
 
     lua_pushinteger(L, new_level);
