@@ -151,6 +151,11 @@ esp_err_t sandbox_break(void)
     return ESP_OK;
 }
 
+bool sandbox_is_abort_requested(void)
+{
+    return s_abort_requested;
+}
+
 void sandbox_get_mem_stats(size_t *out_used, size_t *out_peak, size_t *out_limit)
 {
     if (out_used != NULL) {

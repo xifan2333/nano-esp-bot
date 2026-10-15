@@ -61,6 +61,13 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result);
 esp_err_t sandbox_break(void);
 
 /**
+ * @brief Check if an abort/break has been requested for the running sandbox.
+ *
+ * @return true if abort requested, false otherwise.
+ */
+bool sandbox_is_abort_requested(void);
+
+/**
  * @brief Query current sandbox memory metrics.
  *
  * @param out_used Pointer to receive currently allocated bytes (optional, may be NULL).
