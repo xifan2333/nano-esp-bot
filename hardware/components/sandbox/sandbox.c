@@ -93,7 +93,10 @@ static void sandbox_quota_hook(lua_State *L, lua_Debug *ar)
 
     s_insn_count += HOOK_STEP;
     if (s_insn_quota > 0 && s_insn_count >= s_insn_quota) {
-        luaL_error(L, "quota exceeded: instruction limit of %lu reached", (unsigned long)s_insn_quota);
+        /* NOTE: luaL_error() uses Lua's own formatter, which supports only
+         * %s %c %d %I %f %p %U %%. C's %lu / %x are NOT supported and would
+         * surface as "invalid option ... to 'lua_pushfstring'". */
+        luaL_error(L, "quota exceeded: instruction limit of %d reached", (int)s_insn_quota);
     }
 
     vTaskDelay(0);
