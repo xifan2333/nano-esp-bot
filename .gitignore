@@ -1,7 +1,12 @@
 # Build artifacts
 build/
+**/build/
 sdkconfig
 sdkconfig.old
+**/sdkconfig
+**/sdkconfig.old
+dependencies.lock
+**/dependencies.lock
 *.bin
 *.elf
 *.map
