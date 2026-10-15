@@ -101,14 +101,8 @@ static esp_err_t sandbox_reset_internal(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Open safe standard libraries (base, coroutine, table, string, math, utf8) */
+    /* Open full standard libraries (base, package, coroutine, table, io, os, string, math, utf8, debug) */
     luaL_openlibs(s_L);
-
-    /* Strip dangerous globals from base library */
-    lua_pushnil(s_L);
-    lua_setglobal(s_L, "dofile");
-    lua_pushnil(s_L);
-    lua_setglobal(s_L, "loadfile");
 
     /* Configure instruction quota hook */
     lua_sethook(s_L, sandbox_quota_hook, LUA_MASKCOUNT, HOOK_STEP);
