@@ -12,7 +12,7 @@ extern "C" {
 #define STORAGE_BASE_PATH "/storage"
 #define STORAGE_PARTITION_LABEL "storage"
 #define STORAGE_MAX_OPEN_FILES 8
-#define STORAGE_PATH_MAX_LEN 128
+#define STORAGE_PATH_MAX_LEN 300
 
 /**
  * @brief Initialize and mount the SPIFFS filesystem at /storage.
@@ -82,6 +82,13 @@ esp_err_t storage_write_file(const char *rel_path, const char *data, size_t data
  * @return esp_err_t ESP_OK on success.
  */
 esp_err_t storage_delete_file(const char *rel_path);
+
+/**
+ * @brief Register storage JSON-RPC 2.0 methods (storage.info, storage.list, storage.read, storage.write, storage.delete).
+ *
+ * @return esp_err_t ESP_OK on success.
+ */
+esp_err_t storage_register_rpc(void);
 
 #ifdef __cplusplus
 }

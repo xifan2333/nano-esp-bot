@@ -1,5 +1,6 @@
 #include "storage.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -9,8 +10,12 @@
 #include "esp_vfs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "rpc.h"
+#include "cJSON.h"
 
 static const char *TAG = "storage";
+
+#define STORAGE_READ_MAX_BYTES (16 * 1024)
 
 static SemaphoreHandle_t s_storage_mutex = NULL;
 static bool s_mounted = false;
@@ -212,4 +217,243 @@ esp_err_t storage_delete_file(const char *rel_path)
     xSemaphoreGive(s_storage_mutex);
 
     return (ret == 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static cJSON *storage_rpc_info_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    (void)params;
+    size_t total = 0, used = 0;
+    esp_err_t err = storage_get_info(&total, &used);
+    if (err != ESP_OK) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Storage not available (0x%x)", err);
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddBoolToObject(result, "mounted", true);
+    cJSON_AddStringToObject(result, "base_path", STORAGE_BASE_PATH);
+    cJSON_AddNumberToObject(result, "total_bytes", (double)total);
+    cJSON_AddNumberToObject(result, "used_bytes", (double)used);
+    cJSON_AddNumberToObject(result, "free_bytes", (double)(total >= used ? total - used : 0));
+
+    return result;
+}
+
+static cJSON *storage_rpc_list_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    (void)params;
+    if (!s_mounted) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Storage filesystem is not mounted");
+        return NULL;
+    }
+
+    if (xSemaphoreTake(s_storage_mutex, portMAX_DELAY) != pdTRUE) {
+        *error_code = RPC_ERR_TIMEOUT;
+        snprintf(error_msg, error_msg_len, "Storage mutex timeout");
+        return NULL;
+    }
+
+    DIR *d = opendir(STORAGE_BASE_PATH);
+    if (d == NULL) {
+        xSemaphoreGive(s_storage_mutex);
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to open storage directory");
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        closedir(d);
+        xSemaphoreGive(s_storage_mutex);
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(result, "base_path", STORAGE_BASE_PATH);
+    cJSON *files_arr = cJSON_AddArrayToObject(result, "files");
+
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_type == DT_REG || entry->d_type == DT_UNKNOWN) {
+            char full_path[STORAGE_PATH_MAX_LEN];
+            snprintf(full_path, sizeof(full_path), "%s/%s", STORAGE_BASE_PATH, entry->d_name);
+            struct stat st;
+            size_t file_size = 0;
+            if (stat(full_path, &st) == 0) {
+                file_size = (size_t)st.st_size;
+            }
+
+            cJSON *file_obj = cJSON_CreateObject();
+            cJSON_AddStringToObject(file_obj, "name", entry->d_name);
+            cJSON_AddNumberToObject(file_obj, "size", (double)file_size);
+            cJSON_AddItemToArray(files_arr, file_obj);
+        }
+    }
+
+    closedir(d);
+    xSemaphoreGive(s_storage_mutex);
+    return result;
+}
+
+static cJSON *storage_rpc_read_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    const char *path = NULL;
+    if (params != NULL) {
+        if (cJSON_IsString(params)) {
+            path = params->valuestring;
+        } else if (cJSON_IsObject(params)) {
+            const cJSON *item = cJSON_GetObjectItem(params, "path");
+            if (item && cJSON_IsString(item)) {
+                path = item->valuestring;
+            }
+        }
+    }
+
+    if (path == NULL || strlen(path) == 0) {
+        *error_code = RPC_ERR_INVALID_PARAMS;
+        snprintf(error_msg, error_msg_len, "Missing required parameter 'path'");
+        return NULL;
+    }
+
+    char *buf = malloc(STORAGE_READ_MAX_BYTES);
+    if (buf == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Memory allocation failure");
+        return NULL;
+    }
+
+    size_t read_len = 0;
+    esp_err_t err = storage_read_file(path, buf, STORAGE_READ_MAX_BYTES, &read_len);
+    if (err != ESP_OK) {
+        free(buf);
+        *error_code = (err == ESP_ERR_NOT_FOUND) ? RPC_ERR_INVALID_PARAMS : RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to read file '%s' (%s)", path, esp_err_to_name(err));
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        free(buf);
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(result, "path", path);
+    cJSON_AddNumberToObject(result, "size", (double)read_len);
+    cJSON_AddStringToObject(result, "content", buf);
+    free(buf);
+    return result;
+}
+
+static cJSON *storage_rpc_write_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    const char *path = NULL;
+    const char *content = NULL;
+
+    if (params != NULL && cJSON_IsObject(params)) {
+        const cJSON *p_item = cJSON_GetObjectItem(params, "path");
+        const cJSON *c_item = cJSON_GetObjectItem(params, "content");
+        if (p_item && cJSON_IsString(p_item)) {
+            path = p_item->valuestring;
+        }
+        if (c_item && cJSON_IsString(c_item)) {
+            content = c_item->valuestring;
+        }
+    }
+
+    if (path == NULL || content == NULL) {
+        *error_code = RPC_ERR_INVALID_PARAMS;
+        snprintf(error_msg, error_msg_len, "Missing required string parameters 'path' and 'content'");
+        return NULL;
+    }
+
+    size_t len = strlen(content);
+    esp_err_t err = storage_write_file(path, content, len);
+    if (err != ESP_OK) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to write file '%s' (%s)", path, esp_err_to_name(err));
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddStringToObject(result, "path", path);
+    cJSON_AddNumberToObject(result, "bytes_written", (double)len);
+    return result;
+}
+
+static cJSON *storage_rpc_delete_handler(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
+{
+    const char *path = NULL;
+    if (params != NULL) {
+        if (cJSON_IsString(params)) {
+            path = params->valuestring;
+        } else if (cJSON_IsObject(params)) {
+            const cJSON *item = cJSON_GetObjectItem(params, "path");
+            if (item && cJSON_IsString(item)) {
+                path = item->valuestring;
+            }
+        }
+    }
+
+    if (path == NULL) {
+        *error_code = RPC_ERR_INVALID_PARAMS;
+        snprintf(error_msg, error_msg_len, "Missing required parameter 'path'");
+        return NULL;
+    }
+
+    esp_err_t err = storage_delete_file(path);
+    if (err != ESP_OK) {
+        *error_code = (err == ESP_ERR_NOT_FOUND) ? RPC_ERR_INVALID_PARAMS : RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to delete file '%s' (%s)", path, esp_err_to_name(err));
+        return NULL;
+    }
+
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) {
+        *error_code = RPC_ERR_INTERNAL_ERROR;
+        snprintf(error_msg, error_msg_len, "Failed to allocate JSON result");
+        return NULL;
+    }
+
+    cJSON_AddBoolToObject(result, "ok", true);
+    cJSON_AddStringToObject(result, "path", path);
+    return result;
+}
+
+esp_err_t storage_register_rpc(void)
+{
+    esp_err_t err = rpc_register_method("storage.info", storage_rpc_info_handler);
+    if (err != ESP_OK) return err;
+
+    err = rpc_register_method("storage.list", storage_rpc_list_handler);
+    if (err != ESP_OK) return err;
+
+    err = rpc_register_method("storage.read", storage_rpc_read_handler);
+    if (err != ESP_OK) return err;
+
+    err = rpc_register_method("storage.write", storage_rpc_write_handler);
+    if (err != ESP_OK) return err;
+
+    err = rpc_register_method("storage.delete", storage_rpc_delete_handler);
+    if (err != ESP_OK) return err;
+
+    ESP_LOGI(TAG, "Registered RPC methods: storage.info, storage.list, storage.read, storage.write, storage.delete");
+    return ESP_OK;
 }
