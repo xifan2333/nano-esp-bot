@@ -10,10 +10,34 @@
 #include "ledger.h"
 #include "rpc.h"
 #include "sandbox.h"
+#include "storage.h"
 #include "chal_gpio.h"
 #include "chal_delay.h"
 
 static const char *TAG = "nano-core";
+
+#define INIT_LUA_PATH "/storage/init.lua"
+
+static void init_script_task(void *pvParameters)
+{
+    (void)pvParameters;
+    ESP_LOGI(TAG, "Starting runtime task for %s", INIT_LUA_PATH);
+
+    sandbox_result_t res;
+    esp_err_t err = sandbox_eval_file(INIT_LUA_PATH, &res);
+    if (err == ESP_OK) {
+        if (res.success) {
+            ESP_LOGI(TAG, "%s completed successfully (result: %s, insns: %lu, mem: %zu B)",
+                     INIT_LUA_PATH, res.output, (unsigned long)res.insn_count, res.mem_used);
+        } else {
+            ESP_LOGW(TAG, "%s terminated with error: %s", INIT_LUA_PATH, res.output);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to load %s (%s)", INIT_LUA_PATH, esp_err_to_name(err));
+    }
+
+    vTaskDelete(NULL);
+}
 
 void app_main(void)
 {
@@ -51,5 +75,17 @@ void app_main(void)
     ESP_ERROR_CHECK(sandbox_register_module("gpio", luaopen_gpio));
     ESP_ERROR_CHECK(sandbox_register_module("delay", luaopen_delay));
 
-    ESP_LOGI(TAG, "Micro-Supervisor is active. Control plane, Lua sandbox & C-HAL ready.");
+    /* 5. Initialize Native SPIFFS Storage & Register Storage RPCs */
+    ESP_ERROR_CHECK(storage_init());
+    ESP_ERROR_CHECK(storage_register_rpc());
+
+    /* 6. Appliance-First Boot: Detect and auto-execute /storage/init.lua */
+    if (storage_file_exists("init.lua")) {
+        ESP_LOGI(TAG, "Found startup script %s. Launching runtime...", INIT_LUA_PATH);
+        xTaskCreatePinnedToCore(init_script_task, "lua_runner", 8192, NULL, 5, NULL, 1);
+    } else {
+        ESP_LOGI(TAG, "No %s found. Standing by in idle mode.", INIT_LUA_PATH);
+    }
+
+    ESP_LOGI(TAG, "Micro-Supervisor is active. Control plane & runtime online.");
 }

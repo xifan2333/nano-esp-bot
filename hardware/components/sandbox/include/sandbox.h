@@ -53,6 +53,15 @@ esp_err_t sandbox_reset(void);
 esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result);
 
 /**
+ * @brief Read and evaluate a Lua script file from storage.
+ *
+ * @param filepath Absolute VFS path (e.g. "/storage/init.lua").
+ * @param out_result Output struct with execution metrics and output.
+ * @return esp_err_t ESP_OK if file was read and evaluated.
+ */
+esp_err_t sandbox_eval_file(const char *filepath, sandbox_result_t *out_result);
+
+/**
  * @brief Request an immediate break/abort of any currently running Lua execution.
  *
  * Sets the abort flag and forces a hook interrupt on the next instruction.
