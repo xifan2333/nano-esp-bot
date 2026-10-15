@@ -17,6 +17,12 @@
 static const char *TAG = "sandbox";
 
 #define HOOK_STEP 1000
+#define SANDBOX_MAX_MODULES 16
+
+typedef struct {
+    char name[32];
+    lua_CFunction open_fn;
+} sandbox_module_t;
 
 typedef struct {
     size_t mem_used;
@@ -30,6 +36,17 @@ static sandbox_mem_mgr_t s_mem_mgr = {0, 0, SANDBOX_DEFAULT_MEM_LIMIT};
 static volatile bool s_abort_requested = false;
 static uint32_t s_insn_count = 0;
 static uint32_t s_insn_quota = SANDBOX_DEFAULT_INSN_QUOTA;
+
+static sandbox_module_t s_modules[SANDBOX_MAX_MODULES];
+static size_t s_module_count = 0;
+
+static void sandbox_apply_modules(lua_State *L)
+{
+    for (size_t i = 0; i < s_module_count; i++) {
+        luaL_requiref(L, s_modules[i].name, s_modules[i].open_fn, 1);
+        lua_pop(L, 1);
+    }
+}
 
 static void *sandbox_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
@@ -104,6 +121,9 @@ static esp_err_t sandbox_reset_internal(void)
     /* Open full standard libraries (base, package, coroutine, table, io, os, string, math, utf8, debug) */
     luaL_openlibs(s_L);
 
+    /* Preload and register external C-HAL modules */
+    sandbox_apply_modules(s_L);
+
     /* Configure instruction quota hook */
     lua_sethook(s_L, sandbox_quota_hook, LUA_MASKCOUNT, HOOK_STEP);
 
@@ -154,6 +174,57 @@ esp_err_t sandbox_break(void)
 bool sandbox_is_abort_requested(void)
 {
     return s_abort_requested;
+}
+
+esp_err_t sandbox_register_module(const char *name, lua_CFunction open_fn)
+{
+    if (name == NULL || open_fn == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_sandbox_mutex != NULL) {
+        xSemaphoreTake(s_sandbox_mutex, portMAX_DELAY);
+    }
+
+    /* Check if already registered */
+    for (size_t i = 0; i < s_module_count; i++) {
+        if (strcmp(s_modules[i].name, name) == 0) {
+            s_modules[i].open_fn = open_fn;
+            if (s_L != NULL) {
+                luaL_requiref(s_L, name, open_fn, 1);
+                lua_pop(s_L, 1);
+            }
+            if (s_sandbox_mutex != NULL) {
+                xSemaphoreGive(s_sandbox_mutex);
+            }
+            return ESP_OK;
+        }
+    }
+
+    if (s_module_count >= SANDBOX_MAX_MODULES) {
+        if (s_sandbox_mutex != NULL) {
+            xSemaphoreGive(s_sandbox_mutex);
+        }
+        ESP_LOGE(TAG, "Module registry full (max %d)", SANDBOX_MAX_MODULES);
+        return ESP_ERR_NO_MEM;
+    }
+
+    strncpy(s_modules[s_module_count].name, name, sizeof(s_modules[s_module_count].name) - 1);
+    s_modules[s_module_count].name[sizeof(s_modules[s_module_count].name) - 1] = '\0';
+    s_modules[s_module_count].open_fn = open_fn;
+    s_module_count++;
+
+    if (s_L != NULL) {
+        luaL_requiref(s_L, name, open_fn, 1);
+        lua_pop(s_L, 1);
+    }
+
+    if (s_sandbox_mutex != NULL) {
+        xSemaphoreGive(s_sandbox_mutex);
+    }
+
+    ESP_LOGI(TAG, "Registered Lua module: '%s'", name);
+    return ESP_OK;
 }
 
 void sandbox_get_mem_stats(size_t *out_used, size_t *out_peak, size_t *out_limit)
