@@ -1,6 +1,6 @@
 ---
 name: nano-bot-dev
-description: Master development, architecture, code hygiene, Issue+Draft PR lifecycle, and hardware build guide for nano-esp-bot. Use when developing ESP32-S3 firmware under hardware/, implementing components (ledger, rpc, chal, sandbox, storage), running quality gates (mise run check:plan, check:changed, fix, hw:build), or following the strict Chronological Issue + Draft PR workflow (SOP). Trigger on Chinese requests such as 开发 nano-esp-bot、改底层固件、编写组件、根据 issue 拆解开发、开 PR/提 PR、代码体检与格式化自检、编译固件 hw:build.
+description: Master development, architecture, code hygiene, Issue+Draft PR lifecycle, and hardware build guide for nano-esp-bot. Use when developing ESP32-S3 firmware under hardware/, implementing components (ledger, rpc, chal, sandbox, storage), running quality gates (mise run check:plan, check:changed, fix), or following the strict Chronological Issue + Draft PR workflow (SOP) with CI-delegated firmware compilation. Trigger on Chinese requests such as 开发 nano-esp-bot、改底层固件、编写组件、根据 issue 拆解开发、开 PR/提 PR、代码体检与格式化自检、CI 固件编译验证.
 ---
 
 # nano-esp-bot Unified Development Skill
@@ -35,17 +35,20 @@ Always run verification before committing or reporting task completion:
 # 1. Preview which steps match edited files
 mise run check:plan
 
-# 2. Check changed files safely
+# 2. Check changed files safely (fast local gate)
 mise run check:changed
 
 # 3. Automatically fix formatting issues
 mise run fix
 
-# 4. Verify ESP-IDF firmware compilation
-mise run hw:build
-
-# 5. Full repository validation
+# 4. Full repository validation
 mise run check
+
+# NOTE: Local firmware compilation (mise run hw:build) is strictly FORBIDDEN.
+# Firmware compilation is verified via GitHub Actions CI (gh pr checks).
+# For local hardware testing, use:
+mise run hw:download  # Download built firmware binaries from CI
+mise run hw:flash     # Flash downloaded firmware via esptool
 ```
 
 ---
@@ -63,7 +66,7 @@ Never write implementation code directly on `main` or without an open Draft PR! 
 1. **No Direct Main Commits**: Never push implementation code directly to `main`.
 2. **Draft PR Pre-Creation**: Draft PR with unchecked items (`- [ ]`) MUST be created before writing implementation code.
 3. **No Multi-Task Lump Commits**: Every commit must map to exactly one `- [ ]` task in the PR checklist.
-4. **No Push Without Quality Gate**: Never push code before running `mise run check:changed` and `mise run hw:build`.
+4. **No Local Compilation**: Local development environments MUST NOT run `hw:build` / `idf.py build`. Always run `mise run check:changed` locally before pushing, and delegate firmware build verification to CI (`gh pr checks`).
 5. **Transparent Progress Tracking**: Report progress based on the PR checklist (e.g. "Completed 2 of 4 tasks; currently implementing task 3").
 6. **Zero-Tolerance on Suppressing Diagnostics**: Never add `#pragma GCC diagnostic ignored`, `#pragma clang diagnostic ignored`, or `-Wno-*` compiler flags in CMakeLists.txt to silence warnings. Clean up code so compilation passes cleanly.
 7. **Resource Safety & Ledger Governance**: Any hardware peripheral or pin exposed to user scripts must be claimed and registered through `ledger.h`. Teardown hooks must restore safe high-impedance floating state.
