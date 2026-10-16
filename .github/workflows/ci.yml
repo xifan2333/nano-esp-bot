@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Code Quality & Lint Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup mise and install tools
+        uses: jdx/mise-action@v2
+        with:
+          install_args: "hk"
+          cache: true
+
+      - name: Run repository health checks
+        run: mise run check
+
+  hw-build:
+    name: Build ESP32-S3 Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build firmware with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: "release-v5.4"
+          target: "esp32s3"
+          path: "hardware"
+          command: "idf.py build"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nano-esp-bot-firmware
+          path: |
+            hardware/build/nano-esp-bot-hw.bin
+            hardware/build/bootloader/bootloader.bin
+            hardware/build/partition_table/partition-table.bin
+          if-no-files-found: error
