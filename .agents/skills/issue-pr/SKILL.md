@@ -1,6 +1,6 @@
 ---
 name: issue-pr
-description: Issue and Draft PR driven development workflow SOP. Use when creating an issue, starting development via Draft PR, executing single-item task loops, running quality gates (check:plan, check:changed, hw:build), pushing unified commits, handling review bot triage (CodeRabbit, Greptile), or performing squash-merges.
+description: Issue and Draft PR driven development workflow SOP. Use when creating an issue, starting development via Draft PR, executing single-item task loops, running quality gates (check:plan, check:changed, fix), pushing commits, verifying CI builds (gh pr checks, gh run view --log-failed), handling review bot triage (CodeRabbit, Greptile), or performing squash-merges.
 ---
 
 # Issue + PR Driven Development Workflow (SOP)
@@ -38,11 +38,11 @@ To maintain clear separation of concerns between functional task design and tool
                 +-------------------+-------------------+
                                     |
                 +-------------------v-------------------+
-                | 3. Local Quality Gate & Build Check   |
+                | 3. Local Quality Gate (Fast Check)    |
                 |    mise run check:plan (preview steps)|
                 |    mise run check:changed             |
-                |    mise run hw:build (firmware check) |
                 |    mise run fix (if needed)           |
+                |    (DO NOT run hw:build locally)      |
                 +-------------------+-------------------+
                                     |
                 +-------------------v-------------------+
@@ -58,7 +58,8 @@ To maintain clear separation of concerns between functional task design and tool
 | 5. Unified Push, Checks & Merge                       ||
 |    git push origin <branch>                           ||
 |    gh pr edit --body (check all - [x])                ||
-|    gh pr checks (verify PR CI passed)                 ||
+|    gh pr checks (verify CI hw-build passes)           ||
+|    gh run view --log-failed (if failed, fix in PR)    ||
 |    gh pr ready (mark as ready for review)             ||
 |    gh pr merge --squash --delete-branch               ||
 +-------------------------------------------------------+|
@@ -106,17 +107,17 @@ For each unchecked `- [ ]` task in order:
    # Preview execution plan for modified files
    mise run check:plan
 
-   # Run linters/checkers across changed/staged/untracked files
+   # Run linters/checkers across changed/staged/untracked files (fast local gate)
    mise run check:changed
 
    # Auto-fix formatting if needed
    mise run fix
 
-   # Verify firmware build succeeds cleanly
-   mise run hw:build
-
    # For structured diagnostics:
    hk run check --safe --format jsonl
+
+   # NOTE: DO NOT run hw:build / idf.py build locally!
+   # Firmware compilation is strictly offloaded to GitHub Actions CI.
    ```
 3. **Local Atomic Commit**:
    Keep commits strictly atomic (one commit per `- [ ]` task) and keep them **local** during intermediate steps:
@@ -165,7 +166,7 @@ gh api repos/:owner/:repo/pulls/<pr_id>/comments
 - **CodeRabbit**: Look for `> Prompt for AI Agents` blocks and treat them as candidate repair instructions.
 - **Greptile**: Address cross-file architectural warnings when Confidence $\ge$ 4.
 - **Fix & Push**:
-  Verify findings against actual code, make minimal edits, run `mise run check:changed` and `mise run hw:build`, then commit:
+  Verify findings against actual code, make minimal edits, run `mise run check:changed`, then commit:
   ```bash
   git add <modified_files>
   git commit -m "fix(review): address review feedback (#<issue_id>)"
@@ -174,7 +175,24 @@ gh api repos/:owner/:repo/pulls/<pr_id>/comments
 
 ---
 
-### Phase 5: Final Squash-Merge
+### Phase 5: CI Build Triage Loop (If CI Fails)
+If `gh pr checks` indicates `hw-build` or `check` failure on GitHub Actions:
+```bash
+# 1. Fetch failure logs
+gh run view --log-failed
+
+# 2. Fix compiler/linter errors locally, verify formatting via mise run check:changed
+git add <modified_files>
+git commit -m "fix(build): resolve compilation error reported by CI (#<issue_id>)"
+git push origin <branch>
+
+# 3. Re-verify CI checks until all green
+gh pr checks --watch
+```
+
+---
+
+### Phase 6: Final Squash-Merge
 ```bash
 # 1. Verify all checks pass
 gh pr checks

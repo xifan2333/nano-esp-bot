@@ -12,10 +12,10 @@ Load skills as needed to avoid context pollution:
 
 ```bash
 mise run check:plan     # Preview execution plan for modified files
-mise run check:changed  # Check modified files via native hk
+mise run check:changed  # Check modified files via native hk (fast local gate)
 mise run fix            # Auto-fix issues in modified files
-mise run hw:build       # Compile ESP32-S3 firmware
-mise run hw:flash       # Flash firmware to connected ESP32-S3
+mise run hw:download    # Download built firmware artifacts from GitHub Actions CI
+mise run hw:flash       # Flash downloaded firmware to ESP32-S3 via lightweight esptool
 mise run hw:monitor     # Open serial monitor
 mise run check          # Full repository validation (CI)
 ```
@@ -23,5 +23,5 @@ mise run check          # Full repository validation (CI)
 ## Key Red Lines
 - Always develop via feature branches and Draft PRs with unchecked `- [ ]` tasks (`issue-pr` skill).
 - Monorepo confinement: all firmware lives under `hardware/`.
-- Run `mise run check:changed` and `mise run hw:build` before pushing.
+- Local `hw:build` is forbidden: run `mise run check:changed` locally; verify compilation via CI (`gh pr checks`).
 - All hardware pins/peripherals must be governed by `ledger.h`.
