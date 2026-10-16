@@ -357,8 +357,120 @@ void chal_led_strip_teardown(void)
     }
 }
 
-int luaopen_led_strip(lua_State *L)
+static int lua_led_strip_init(lua_State *L)
+{
+    int pin = (int)luaL_optinteger(L, 1, 48);
+    uint32_t length = (uint32_t)luaL_optinteger(L, 2, 1);
+
+    esp_err_t err = chal_led_strip_init(pin, length);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_led_strip_deinit(lua_State *L)
+{
+    esp_err_t err = chal_led_strip_deinit();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_led_strip_status(lua_State *L)
 {
     lua_newtable(L);
+    lua_pushboolean(L, chal_led_strip_is_initialized());
+    lua_setfield(L, -2, "initialized");
+    if (chal_led_strip_is_initialized()) {
+        lua_pushinteger(L, chal_led_strip_get_pin());
+        lua_setfield(L, -2, "pin");
+        lua_pushinteger(L, chal_led_strip_get_length());
+        lua_setfield(L, -2, "length");
+    }
+    return 1;
+}
+
+static int lua_led_strip_set_pixel(lua_State *L)
+{
+    lua_Integer idx = luaL_checkinteger(L, 1);
+    if (idx < 1) {
+        return luaL_error(L, "led index must be >= 1 (1-based)");
+    }
+    uint8_t r = (uint8_t)luaL_checkinteger(L, 2);
+    uint8_t g = (uint8_t)luaL_checkinteger(L, 3);
+    uint8_t b = (uint8_t)luaL_checkinteger(L, 4);
+
+    esp_err_t err = chal_led_strip_set_pixel((uint32_t)(idx - 1), r, g, b);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_led_strip_fill(lua_State *L)
+{
+    uint8_t r = (uint8_t)luaL_checkinteger(L, 1);
+    uint8_t g = (uint8_t)luaL_checkinteger(L, 2);
+    uint8_t b = (uint8_t)luaL_checkinteger(L, 3);
+
+    esp_err_t err = chal_led_strip_fill(r, g, b);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_led_strip_refresh(lua_State *L)
+{
+    esp_err_t err = chal_led_strip_refresh();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_led_strip_clear(lua_State *L)
+{
+    esp_err_t err = chal_led_strip_clear();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static const luaL_Reg s_led_strip_funcs[] = {
+    {"init", lua_led_strip_init},
+    {"deinit", lua_led_strip_deinit},
+    {"status", lua_led_strip_status},
+    {"set_pixel", lua_led_strip_set_pixel},
+    {"fill", lua_led_strip_fill},
+    {"refresh", lua_led_strip_refresh},
+    {"clear", lua_led_strip_clear},
+    {NULL, NULL}
+};
+
+int luaopen_led_strip(lua_State *L)
+{
+    luaL_newlib(L, s_led_strip_funcs);
     return 1;
 }
