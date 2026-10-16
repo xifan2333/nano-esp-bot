@@ -44,14 +44,6 @@ typedef void (*rpc_break_callback_t)(void);
 esp_err_t rpc_init(void);
 
 /**
- * @brief Register a JSON-RPC method handler.
- * @param method Method name (e.g. "system.ping", "system.info").
- * @param handler Function pointer to method handler.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if registry full, ESP_ERR_INVALID_ARG if invalid params.
- */
-esp_err_t rpc_register_method(const char *method, rpc_method_handler_t handler);
-
-/**
  * @brief Send a JSON-RPC notification (no id).
  * @param event_name Event method name (e.g. "event.push").
  * @param params cJSON object with parameters (ownership transferred to rpc_notify, caller must not delete).
@@ -60,7 +52,7 @@ esp_err_t rpc_register_method(const char *method, rpc_method_handler_t handler);
 esp_err_t rpc_notify(const char *event_name, cJSON *params);
 
 /**
- * @brief Set the break callback (triggered when Ctrl-C or system.break is received).
+ * @brief Set the break callback (triggered when Ctrl-C or break primitive is received).
  */
 void rpc_set_break_callback(rpc_break_callback_t cb);
 
