@@ -1,5 +1,7 @@
 # nano-esp-bot
 
+[![CI](https://github.com/xifan2333/nano-esp-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/xifan2333/nano-esp-bot/actions/workflows/ci.yml)
+
 Minimal core harness and physical execution runtime for ESP32-S3.
 
 `nano-esp-bot` turns an ESP32-S3 into a high-reliability physical agent appliance. Following the minimalist tool philosophy of Pi (Coding Agent), the firmware eschews monolithic microservice RPC bloat in favor of **7 orthogonal atomic primitives** served over USB-Serial/JTAG with $O(1)$ table-driven dispatch.
