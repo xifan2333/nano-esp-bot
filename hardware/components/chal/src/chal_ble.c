@@ -277,6 +277,39 @@ esp_err_t chal_ble_get_address(char *addr_str, size_t max_len)
     return ESP_OK;
 }
 
+static bool parse_uuid128(const char *str, uint8_t out[16])
+{
+    if (!str) return false;
+    size_t len = strlen(str);
+    if (len == 16) {
+        memcpy(out, str, 16);
+        return true;
+    }
+    size_t count = 0;
+    uint8_t current_byte = 0;
+    bool high_nibble = true;
+
+    for (size_t i = 0; i < len && count < 16; i++) {
+        char c = str[i];
+        if (c == '-') continue;
+        int val = -1;
+        if (c >= '0' && c <= '9') val = c - '0';
+        else if (c >= 'a' && c <= 'f') val = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') val = c - 'A' + 10;
+        else return false;
+
+        if (high_nibble) {
+            current_byte = (uint8_t)(val << 4);
+            high_nibble = false;
+        } else {
+            current_byte |= (uint8_t)val;
+            out[count++] = current_byte;
+            high_nibble = true;
+        }
+    }
+    return count == 16;
+}
+
 esp_err_t chal_ble_adv_start_ibeacon(const uint8_t uuid[16], uint16_t major, uint16_t minor,
                                     int8_t measured_power, uint32_t interval_ms)
 {
@@ -644,8 +677,315 @@ esp_err_t chal_ble_gatts_notify(const char *char_uuid, const uint8_t *val, size_
     return rc == 0 ? ESP_OK : ESP_FAIL;
 }
 
-int luaopen_ble(lua_State *L)
+static int lua_ble_init(lua_State *L)
+{
+    esp_err_t err = chal_ble_init();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_deinit(lua_State *L)
+{
+    esp_err_t err = chal_ble_deinit();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_status(lua_State *L)
 {
     lua_newtable(L);
+    lua_pushboolean(L, chal_ble_is_initialized());
+    lua_setfield(L, -2, "initialized");
+    lua_pushboolean(L, chal_ble_is_advertising());
+    lua_setfield(L, -2, "advertising");
+    lua_pushboolean(L, chal_ble_is_connected());
+    lua_setfield(L, -2, "connected");
+
+    char addr_str[18] = {0};
+    if (chal_ble_get_address(addr_str, sizeof(addr_str)) == ESP_OK) {
+        lua_pushstring(L, addr_str);
+        lua_setfield(L, -2, "addr");
+    }
+    return 1;
+}
+
+static int lua_ble_adv_start(lua_State *L)
+{
+    if (!lua_istable(L, 1)) {
+        return luaL_error(L, "ble.adv_start requires an options table");
+    }
+
+    uint32_t interval_ms = 50;
+    lua_getfield(L, 1, "interval");
+    if (lua_isinteger(L, -1)) {
+        interval_ms = (uint32_t)lua_tointeger(L, -1);
+    }
+    lua_pop(L, 1);
+
+    bool connectable = false;
+    lua_getfield(L, 1, "connectable");
+    if (!lua_isnil(L, -1)) {
+        connectable = lua_toboolean(L, -1);
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "ibeacon");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "uuid");
+        const char *uuid_str = luaL_optstring(L, -1, "fda50693-a4e2-4fb1-afcf-c6eb07647825");
+        uint8_t uuid[16] = {0};
+        parse_uuid128(uuid_str, uuid);
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "major");
+        uint16_t major = (uint16_t)luaL_optinteger(L, -1, 10001);
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "minor");
+        uint16_t minor = (uint16_t)luaL_optinteger(L, -1, 19641);
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "power");
+        int8_t power = (int8_t)luaL_optinteger(L, -1, -59);
+        lua_pop(L, 1);
+
+        lua_pop(L, 1);
+
+        esp_err_t err = chal_ble_adv_start_ibeacon(uuid, major, minor, power, interval_ms);
+        if (err != ESP_OK) {
+            lua_pushnil(L);
+            lua_pushstring(L, esp_err_to_name(err));
+            return 2;
+        }
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "raw");
+    if (lua_isstring(L, -1)) {
+        size_t raw_len = 0;
+        const char *raw_data = lua_tolstring(L, -1, &raw_len);
+
+        size_t rsp_len = 0;
+        const char *rsp_data = NULL;
+        lua_getfield(L, 1, "raw_scan_rsp");
+        if (lua_isstring(L, -1)) {
+            rsp_data = lua_tolstring(L, -1, &rsp_len);
+        }
+        lua_pop(L, 1);
+
+        esp_err_t err = chal_ble_adv_start_raw((const uint8_t *)raw_data, raw_len,
+                                               (const uint8_t *)rsp_data, rsp_len,
+                                               interval_ms, connectable);
+        lua_pop(L, 1);
+        if (err != ESP_OK) {
+            lua_pushnil(L);
+            lua_pushstring(L, esp_err_to_name(err));
+            return 2;
+        }
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pop(L, 1);
+
+    const char *name = NULL;
+    lua_getfield(L, 1, "name");
+    if (lua_isstring(L, -1)) {
+        name = lua_tostring(L, -1);
+    }
+    lua_pop(L, 1);
+
+    size_t mfg_len = 0;
+    const char *mfg_data = NULL;
+    lua_getfield(L, 1, "mfg_data");
+    if (lua_isstring(L, -1)) {
+        mfg_data = lua_tolstring(L, -1, &mfg_len);
+    }
+    lua_pop(L, 1);
+
+    uint16_t uuid16 = 0;
+    lua_getfield(L, 1, "uuid");
+    if (lua_isinteger(L, -1)) {
+        uuid16 = (uint16_t)lua_tointeger(L, -1);
+    } else if (lua_isstring(L, -1)) {
+        const char *u_str = lua_tostring(L, -1);
+        ble_uuid_any_t u;
+        if (ble_uuid_from_str(&u, u_str) == 0 && u.u.type == BLE_UUID_TYPE_16) {
+            uuid16 = u.u16.value;
+        }
+    }
+    lua_pop(L, 1);
+
+    esp_err_t err = chal_ble_adv_start_custom(name, (const uint8_t *)mfg_data, mfg_len,
+                                              uuid16, interval_ms, connectable);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_adv_stop(lua_State *L)
+{
+    esp_err_t err = chal_ble_adv_stop();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_gatts_define(lua_State *L)
+{
+    if (!lua_istable(L, 1)) {
+        return luaL_error(L, "ble.gatts_define requires a service definition table");
+    }
+
+    lua_getfield(L, 1, "uuid");
+    const char *svc_uuid = luaL_checkstring(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "characteristics");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return luaL_error(L, "characteristics array required in gatts_define");
+    }
+
+    lua_Integer nchrs = luaL_len(L, -1);
+    for (lua_Integer i = 1; i <= nchrs; i++) {
+        lua_rawgeti(L, -1, i);
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            continue;
+        }
+
+        lua_getfield(L, -1, "uuid");
+        const char *chr_uuid = luaL_checkstring(L, -1);
+        lua_pop(L, 1);
+
+        uint8_t flags = 0;
+        lua_getfield(L, -1, "flags");
+        if (lua_istable(L, -1)) {
+            lua_Integer nflags = luaL_len(L, -1);
+            for (lua_Integer f = 1; f <= nflags; f++) {
+                lua_rawgeti(L, -1, f);
+                const char *flag_name = lua_tostring(L, -1);
+                if (flag_name) {
+                    if (strcasecmp(flag_name, "read") == 0) flags |= BLE_GATT_CHR_F_READ;
+                    else if (strcasecmp(flag_name, "write") == 0) flags |= BLE_GATT_CHR_F_WRITE;
+                    else if (strcasecmp(flag_name, "notify") == 0) flags |= BLE_GATT_CHR_F_NOTIFY;
+                    else if (strcasecmp(flag_name, "indicate") == 0) flags |= BLE_GATT_CHR_F_INDICATE;
+                }
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+
+        size_t val_len = 0;
+        const char *val_data = NULL;
+        lua_getfield(L, -1, "value");
+        if (lua_isstring(L, -1)) {
+            val_data = lua_tolstring(L, -1, &val_len);
+        }
+        lua_pop(L, 1);
+
+        esp_err_t err = chal_ble_gatts_register_service(svc_uuid, chr_uuid, flags,
+                                                        (const uint8_t *)val_data, val_len);
+        lua_pop(L, 1);
+        if (err != ESP_OK) {
+            lua_pop(L, 1);
+            lua_pushnil(L);
+            lua_pushstring(L, esp_err_to_name(err));
+            return 2;
+        }
+    }
+    lua_pop(L, 1);
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_gatts_set_value(lua_State *L)
+{
+    const char *char_uuid = luaL_checkstring(L, 1);
+    size_t len = 0;
+    const char *val = luaL_checklstring(L, 2, &len);
+
+    esp_err_t err = chal_ble_gatts_set_value(char_uuid, (const uint8_t *)val, len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_gatts_get_value(lua_State *L)
+{
+    const char *char_uuid = luaL_checkstring(L, 1);
+    uint8_t buf[MAX_CHAR_VAL_LEN];
+    size_t out_len = 0;
+
+    esp_err_t err = chal_ble_gatts_get_value(char_uuid, buf, sizeof(buf), &out_len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushlstring(L, (const char *)buf, out_len);
+    return 1;
+}
+
+static int lua_ble_notify(lua_State *L)
+{
+    const char *char_uuid = luaL_checkstring(L, 1);
+    size_t len = 0;
+    const char *val = NULL;
+    if (lua_isstring(L, 2)) {
+        val = lua_tolstring(L, 2, &len);
+    }
+
+    esp_err_t err = chal_ble_gatts_notify(char_uuid, (const uint8_t *)val, len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static const luaL_Reg s_ble_funcs[] = {
+    {"init", lua_ble_init},
+    {"deinit", lua_ble_deinit},
+    {"status", lua_ble_status},
+    {"adv_start", lua_ble_adv_start},
+    {"adv_stop", lua_ble_adv_stop},
+    {"gatts_define", lua_ble_gatts_define},
+    {"gatts_set_value", lua_ble_gatts_set_value},
+    {"gatts_get_value", lua_ble_gatts_get_value},
+    {"notify", lua_ble_notify},
+    {NULL, NULL}
+};
+
+int luaopen_ble(lua_State *L)
+{
+    luaL_newlib(L, s_ble_funcs);
     return 1;
 }
