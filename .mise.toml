@@ -2,9 +2,6 @@
 hk = "2.6.0"
 python = "3.11"
 
-[env]
-_.source = { path = "scripts/export-idf.sh", tools = true }
-
 [tasks.check]
 description = "Check all files via hk"
 run = "hk check --all"
