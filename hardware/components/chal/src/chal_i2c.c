@@ -379,8 +379,273 @@ void chal_i2c_teardown(void)
     chal_i2c_deinit();
 }
 
-int luaopen_i2c(lua_State *L)
+static int extract_bytes_from_arg(lua_State *L, int arg_idx, uint8_t *stack_buf, size_t stack_size, uint8_t **out_buf, size_t *out_len)
+{
+    if (lua_isstring(L, arg_idx)) {
+        size_t len = 0;
+        const char *str = lua_tolstring(L, arg_idx, &len);
+        if (len > stack_size) {
+            uint8_t *hbuf = (uint8_t *)malloc(len);
+            if (!hbuf) return -1;
+            memcpy(hbuf, str, len);
+            *out_buf = hbuf;
+        } else {
+            memcpy(stack_buf, str, len);
+            *out_buf = stack_buf;
+        }
+        *out_len = len;
+        return 0;
+    } else if (lua_isinteger(L, arg_idx)) {
+        stack_buf[0] = (uint8_t)lua_tointeger(L, arg_idx);
+        *out_buf = stack_buf;
+        *out_len = 1;
+        return 0;
+    } else if (lua_istable(L, arg_idx)) {
+        size_t len = luaL_len(L, arg_idx);
+        uint8_t *buf = stack_buf;
+        if (len > stack_size) {
+            buf = (uint8_t *)malloc(len);
+            if (!buf) return -1;
+        }
+        for (size_t i = 0; i < len; i++) {
+            lua_rawgeti(L, arg_idx, (lua_Integer)(i + 1));
+            buf[i] = (uint8_t)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+        }
+        *out_buf = buf;
+        *out_len = len;
+        return 0;
+    }
+    return -2;
+}
+
+static int lua_i2c_init(lua_State *L)
+{
+    int sda = (int)luaL_checkinteger(L, 1);
+    int scl = (int)luaL_checkinteger(L, 2);
+    uint32_t speed = (uint32_t)luaL_optinteger(L, 3, CHAL_I2C_DEFAULT_FREQ_HZ);
+
+    esp_err_t err = chal_i2c_init(sda, scl, speed);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_i2c_deinit(lua_State *L)
+{
+    chal_i2c_deinit();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_i2c_scan(lua_State *L)
+{
+    uint8_t addrs[128];
+    size_t count = 0;
+    esp_err_t err = chal_i2c_scan(addrs, sizeof(addrs), &count);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_createtable(L, (int)count, 0);
+    for (size_t i = 0; i < count; i++) {
+        lua_pushinteger(L, addrs[i]);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
+
+static int lua_i2c_probe(lua_State *L)
+{
+    uint8_t addr = (uint8_t)luaL_checkinteger(L, 1);
+    int timeout = (int)luaL_optinteger(L, 2, 50);
+
+    esp_err_t err = chal_i2c_probe(addr, timeout);
+    lua_pushboolean(L, err == ESP_OK);
+    return 1;
+}
+
+static int lua_i2c_write(lua_State *L)
+{
+    uint8_t dev_addr = (uint8_t)luaL_checkinteger(L, 1);
+    int timeout = (int)luaL_optinteger(L, 3, I2C_DEFAULT_TIMEOUT_MS);
+
+    uint8_t stack_buf[64];
+    uint8_t *buf = NULL;
+    size_t len = 0;
+
+    int rc = extract_bytes_from_arg(L, 2, stack_buf, sizeof(stack_buf), &buf, &len);
+    if (rc == -1) {
+        lua_pushnil(L);
+        lua_pushstring(L, "out of memory");
+        return 2;
+    } else if (rc == -2) {
+        return luaL_error(L, "expected string, integer, or table of bytes for data");
+    }
+
+    esp_err_t err = chal_i2c_write(dev_addr, buf, len, timeout);
+    if (buf != stack_buf) {
+        free(buf);
+    }
+
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_i2c_read(lua_State *L)
+{
+    uint8_t dev_addr = (uint8_t)luaL_checkinteger(L, 1);
+    size_t len = (size_t)luaL_checkinteger(L, 2);
+    int timeout = (int)luaL_optinteger(L, 3, I2C_DEFAULT_TIMEOUT_MS);
+
+    if (len == 0) {
+        lua_pushstring(L, "");
+        return 1;
+    }
+    if (len > 1024) {
+        lua_pushnil(L);
+        lua_pushstring(L, "length exceeds maximum 1024 bytes");
+        return 2;
+    }
+
+    uint8_t stack_buf[64];
+    uint8_t *buf = (len <= sizeof(stack_buf)) ? stack_buf : (uint8_t *)malloc(len);
+    if (!buf) {
+        lua_pushnil(L);
+        lua_pushstring(L, "out of memory");
+        return 2;
+    }
+
+    esp_err_t err = chal_i2c_read(dev_addr, buf, len, timeout);
+    if (err != ESP_OK) {
+        if (buf != stack_buf) free(buf);
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushlstring(L, (const char *)buf, len);
+    if (buf != stack_buf) {
+        free(buf);
+    }
+    return 1;
+}
+
+static int lua_i2c_write_reg(lua_State *L)
+{
+    uint8_t dev_addr = (uint8_t)luaL_checkinteger(L, 1);
+    uint8_t reg_addr = (uint8_t)luaL_checkinteger(L, 2);
+    int timeout = (int)luaL_optinteger(L, 4, I2C_DEFAULT_TIMEOUT_MS);
+
+    uint8_t stack_buf[64];
+    uint8_t *buf = NULL;
+    size_t len = 0;
+
+    int rc = extract_bytes_from_arg(L, 3, stack_buf, sizeof(stack_buf), &buf, &len);
+    if (rc == -1) {
+        lua_pushnil(L);
+        lua_pushstring(L, "out of memory");
+        return 2;
+    } else if (rc == -2) {
+        return luaL_error(L, "expected string, integer, or table of bytes for data");
+    }
+
+    esp_err_t err = chal_i2c_write_reg(dev_addr, reg_addr, buf, len, timeout);
+    if (buf != stack_buf) {
+        free(buf);
+    }
+
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_i2c_read_reg(lua_State *L)
+{
+    uint8_t dev_addr = (uint8_t)luaL_checkinteger(L, 1);
+    uint8_t reg_addr = (uint8_t)luaL_checkinteger(L, 2);
+    size_t len = (size_t)luaL_checkinteger(L, 3);
+    int timeout = (int)luaL_optinteger(L, 4, I2C_DEFAULT_TIMEOUT_MS);
+
+    if (len == 0) {
+        lua_pushstring(L, "");
+        return 1;
+    }
+    if (len > 1024) {
+        lua_pushnil(L);
+        lua_pushstring(L, "length exceeds maximum 1024 bytes");
+        return 2;
+    }
+
+    uint8_t stack_buf[64];
+    uint8_t *buf = (len <= sizeof(stack_buf)) ? stack_buf : (uint8_t *)malloc(len);
+    if (!buf) {
+        lua_pushnil(L);
+        lua_pushstring(L, "out of memory");
+        return 2;
+    }
+
+    esp_err_t err = chal_i2c_read_reg(dev_addr, reg_addr, buf, len, timeout);
+    if (err != ESP_OK) {
+        if (buf != stack_buf) free(buf);
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushlstring(L, (const char *)buf, len);
+    if (buf != stack_buf) {
+        free(buf);
+    }
+    return 1;
+}
+
+static int lua_i2c_status(lua_State *L)
 {
     lua_newtable(L);
+    lua_pushboolean(L, chal_i2c_is_initialized());
+    lua_setfield(L, -2, "initialized");
+    if (chal_i2c_is_initialized()) {
+        lua_pushinteger(L, chal_i2c_get_sda_pin());
+        lua_setfield(L, -2, "sda");
+        lua_pushinteger(L, chal_i2c_get_scl_pin());
+        lua_setfield(L, -2, "scl");
+        lua_pushinteger(L, chal_i2c_get_speed_hz());
+        lua_setfield(L, -2, "speed_hz");
+    }
+    return 1;
+}
+
+static const luaL_Reg i2c_funcs[] = {
+    {"init", lua_i2c_init},
+    {"deinit", lua_i2c_deinit},
+    {"scan", lua_i2c_scan},
+    {"probe", lua_i2c_probe},
+    {"read", lua_i2c_read},
+    {"write", lua_i2c_write},
+    {"read_reg", lua_i2c_read_reg},
+    {"write_reg", lua_i2c_write_reg},
+    {"status", lua_i2c_status},
+    {NULL, NULL}
+};
+
+int luaopen_i2c(lua_State *L)
+{
+    luaL_newlib(L, i2c_funcs);
     return 1;
 }
