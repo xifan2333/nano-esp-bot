@@ -167,7 +167,7 @@ static uint32_t atten_max_mv(adc_atten_t atten)
     }
 }
 
-esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten)
+esp_err_t chal_adc_init_pin(int gpio_num, int atten)
 {
     if (!ledger_is_pin_safe(gpio_num)) {
         ESP_LOGE(TAG, "GPIO %d is not safe for ADC", gpio_num);
@@ -182,6 +182,8 @@ esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten)
         return err;
     }
 
+    adc_atten_t adc_atten = (adc_atten_t)atten;
+
     if (!s_adc_mutex) {
         s_adc_mutex = xSemaphoreCreateMutex();
         if (!s_adc_mutex) {
@@ -193,10 +195,10 @@ esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten)
     int slot_idx = find_slot_by_gpio(gpio_num);
     if (slot_idx >= 0) {
         // Reconfigure attenuation if changed
-        if (s_slots[slot_idx].atten != atten) {
+        if (s_slots[slot_idx].atten != adc_atten) {
             adc_oneshot_unit_handle_t u_handle = (s_slots[slot_idx].unit == ADC_UNIT_1) ? s_unit1_handle : s_unit2_handle;
             adc_oneshot_chan_cfg_t chan_cfg = {
-                .atten = atten,
+                .atten = adc_atten,
                 .bitwidth = ADC_BITWIDTH_DEFAULT,
             };
             err = adc_oneshot_config_channel(u_handle, channel, &chan_cfg);
@@ -209,8 +211,8 @@ esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten)
                 s_slots[slot_idx].cali_handle = NULL;
                 s_slots[slot_idx].calibrated = false;
             }
-            s_slots[slot_idx].atten = atten;
-            s_slots[slot_idx].calibrated = create_cali_handle(unit, channel, atten, &s_slots[slot_idx].cali_handle);
+            s_slots[slot_idx].atten = adc_atten;
+            s_slots[slot_idx].calibrated = create_cali_handle(unit, channel, adc_atten, &s_slots[slot_idx].cali_handle);
         }
         xSemaphoreGive(s_adc_mutex);
         return ESP_OK;
@@ -238,7 +240,7 @@ esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten)
     }
 
     adc_oneshot_chan_cfg_t chan_cfg = {
-        .atten = atten,
+        .atten = adc_atten,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     err = adc_oneshot_config_channel(u_handle, channel, &chan_cfg);
@@ -251,19 +253,19 @@ esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten)
     }
 
     adc_cali_handle_t cali_handle = NULL;
-    bool cal_ok = create_cali_handle(unit, channel, atten, &cali_handle);
+    bool cal_ok = create_cali_handle(unit, channel, adc_atten, &cali_handle);
 
     s_slots[slot_idx].active = true;
     s_slots[slot_idx].gpio_num = gpio_num;
     s_slots[slot_idx].unit = unit;
     s_slots[slot_idx].channel = channel;
-    s_slots[slot_idx].atten = atten;
+    s_slots[slot_idx].atten = adc_atten;
     s_slots[slot_idx].cali_handle = cali_handle;
     s_slots[slot_idx].calibrated = cal_ok;
 
     xSemaphoreGive(s_adc_mutex);
     ESP_LOGI(TAG, "ADC configured on GPIO %d (unit %d, chan %d, atten %d, calibrated: %s)",
-             gpio_num, (int)unit + 1, (int)channel, (int)atten, cal_ok ? "yes" : "no");
+             gpio_num, (int)unit + 1, (int)channel, (int)adc_atten, cal_ok ? "yes" : "no");
     return ESP_OK;
 }
 
@@ -386,8 +388,164 @@ void chal_adc_teardown(void)
     }
 }
 
-int luaopen_adc(lua_State *L)
+static adc_atten_t parse_atten(lua_State *L, int arg_idx)
+{
+    if (lua_isnoneornil(L, arg_idx)) {
+        return ADC_ATTEN_DB_12;
+    }
+    if (lua_isinteger(L, arg_idx)) {
+        int val = (int)lua_tointeger(L, arg_idx);
+        if (val == 0) return ADC_ATTEN_DB_0;
+        if (val == 2 || val == 3) return ADC_ATTEN_DB_2_5;
+        if (val == 6) return ADC_ATTEN_DB_6;
+        if (val == 11 || val == 12) return ADC_ATTEN_DB_12;
+    } else if (lua_isstring(L, arg_idx)) {
+        const char *s = lua_tostring(L, arg_idx);
+        if (strcmp(s, "0db") == 0 || strcmp(s, "0") == 0) return ADC_ATTEN_DB_0;
+        if (strcmp(s, "2.5db") == 0 || strcmp(s, "2.5") == 0) return ADC_ATTEN_DB_2_5;
+        if (strcmp(s, "6db") == 0 || strcmp(s, "6") == 0) return ADC_ATTEN_DB_6;
+        if (strcmp(s, "12db") == 0 || strcmp(s, "11db") == 0 || strcmp(s, "12") == 0) return ADC_ATTEN_DB_12;
+    }
+    return ADC_ATTEN_DB_12;
+}
+
+static const char *atten_to_string(adc_atten_t atten)
+{
+    switch (atten) {
+    case ADC_ATTEN_DB_0:   return "0dB";
+    case ADC_ATTEN_DB_2_5: return "2.5dB";
+    case ADC_ATTEN_DB_6:   return "6dB";
+    case ADC_ATTEN_DB_12:  return "12dB";
+    default:               return "unknown";
+    }
+}
+
+static int lua_adc_init(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    adc_atten_t atten = parse_atten(L, 2);
+
+    esp_err_t err = chal_adc_init_pin(pin, atten);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_adc_deinit(lua_State *L)
+{
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) {
+        int pin = (int)luaL_checkinteger(L, 1);
+        chal_adc_deinit_pin(pin);
+    } else {
+        chal_adc_teardown();
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_adc_read(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        adc_atten_t atten = parse_atten(L, 2);
+        chal_adc_init_pin(pin, atten);
+    }
+
+    int raw = 0, mv = 0;
+    esp_err_t err = chal_adc_read(pin, &raw, &mv);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, raw);
+    lua_pushinteger(L, mv);
+    return 2;
+}
+
+static int lua_adc_read_raw(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        adc_atten_t atten = parse_atten(L, 2);
+        chal_adc_init_pin(pin, atten);
+    }
+
+    int raw = 0;
+    esp_err_t err = chal_adc_read_raw(pin, &raw);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, raw);
+    return 1;
+}
+
+static int lua_adc_read_mv(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        adc_atten_t atten = parse_atten(L, 2);
+        chal_adc_init_pin(pin, atten);
+    }
+
+    int mv = 0;
+    esp_err_t err = chal_adc_read_mv(pin, &mv);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, mv);
+    return 1;
+}
+
+static int lua_adc_status(lua_State *L)
 {
     lua_newtable(L);
+
+    if (s_adc_mutex && xSemaphoreTake(s_adc_mutex, portMAX_DELAY) == pdTRUE) {
+        for (int i = 0; i < ADC_MAX_PINS; i++) {
+            if (s_slots[i].active) {
+                lua_pushinteger(L, s_slots[i].gpio_num);
+                lua_newtable(L);
+                lua_pushinteger(L, (int)s_slots[i].unit + 1);
+                lua_setfield(L, -2, "unit");
+                lua_pushinteger(L, (int)s_slots[i].channel);
+                lua_setfield(L, -2, "channel");
+                lua_pushstring(L, atten_to_string(s_slots[i].atten));
+                lua_setfield(L, -2, "atten");
+                lua_pushboolean(L, s_slots[i].calibrated);
+                lua_setfield(L, -2, "calibrated");
+                lua_settable(L, -3);
+            }
+        }
+        xSemaphoreGive(s_adc_mutex);
+    }
+
+    return 1;
+}
+
+static const luaL_Reg adc_funcs[] = {
+    {"init", lua_adc_init},
+    {"deinit", lua_adc_deinit},
+    {"read", lua_adc_read},
+    {"read_raw", lua_adc_read_raw},
+    {"read_mv", lua_adc_read_mv},
+    {"status", lua_adc_status},
+    {NULL, NULL}
+};
+
+int luaopen_adc(lua_State *L)
+{
+    luaL_newlib(L, adc_funcs);
     return 1;
 }

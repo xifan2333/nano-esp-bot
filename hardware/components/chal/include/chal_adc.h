@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "esp_err.h"
-#include "esp_adc/adc_oneshot.h"
 #include "lua.h"
 
 #ifdef __cplusplus
@@ -19,10 +18,10 @@ int luaopen_adc(lua_State *L);
 /**
  * @brief Initialize or reconfigure an ADC pin with specified attenuation.
  * @param gpio_num GPIO number supporting ADC.
- * @param atten Attenuation level (0dB, 2.5dB, 6dB, 12dB).
+ * @param atten Attenuation level (0=0dB, 1=2.5dB, 2=6dB, 3=12dB).
  * @return ESP_OK on success.
  */
-esp_err_t chal_adc_init_pin(int gpio_num, adc_atten_t atten);
+esp_err_t chal_adc_init_pin(int gpio_num, int atten);
 
 /**
  * @brief Deinitialize a configured ADC pin and release ledger reservation.
