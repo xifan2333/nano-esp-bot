@@ -1,6 +1,8 @@
 # Build artifacts
 build/
 **/build/
+managed_components/
+**/managed_components/
 sdkconfig
 sdkconfig.old
 **/sdkconfig
