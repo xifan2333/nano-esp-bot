@@ -708,8 +708,323 @@ void chal_ble_hid_teardown(void)
     }
 }
 
-int luaopen_ble_hid(lua_State *L)
+static uint8_t parse_modifier_str(const char *name)
+{
+    if (!name) return 0;
+    if (strcasecmp(name, "CTRL") == 0 || strcasecmp(name, "CONTROL") == 0 || strcasecmp(name, "LCTRL") == 0) return MOD_LCTRL;
+    if (strcasecmp(name, "SHIFT") == 0 || strcasecmp(name, "LSHIFT") == 0) return MOD_LSHIFT;
+    if (strcasecmp(name, "ALT") == 0 || strcasecmp(name, "LALT") == 0) return MOD_LALT;
+    if (strcasecmp(name, "GUI") == 0 || strcasecmp(name, "WIN") == 0 || strcasecmp(name, "CMD") == 0 || strcasecmp(name, "META") == 0 || strcasecmp(name, "LGUI") == 0) return MOD_LGUI;
+    if (strcasecmp(name, "RCTRL") == 0) return MOD_RCTRL;
+    if (strcasecmp(name, "RSHIFT") == 0) return MOD_RSHIFT;
+    if (strcasecmp(name, "RALT") == 0) return MOD_RALT;
+    if (strcasecmp(name, "RGUI") == 0) return MOD_RGUI;
+    return 0;
+}
+
+static uint8_t parse_mouse_button(const char *btn)
+{
+    if (!btn) return 0;
+    if (strcasecmp(btn, "left") == 0 || strcasecmp(btn, "l") == 0) return 0x01;
+    if (strcasecmp(btn, "right") == 0 || strcasecmp(btn, "r") == 0) return 0x02;
+    if (strcasecmp(btn, "middle") == 0 || strcasecmp(btn, "m") == 0) return 0x04;
+    return 0;
+}
+
+static uint16_t lookup_media_usage(const char *act)
+{
+    if (!act) return 0;
+    if (strcasecmp(act, "volume_up") == 0 || strcasecmp(act, "vol_up") == 0) return 0x00E9;
+    if (strcasecmp(act, "volume_down") == 0 || strcasecmp(act, "vol_down") == 0) return 0x00EA;
+    if (strcasecmp(act, "mute") == 0) return 0x00E2;
+    if (strcasecmp(act, "play_pause") == 0 || strcasecmp(act, "playpause") == 0) return 0x00CD;
+    if (strcasecmp(act, "play") == 0) return 0x00B0;
+    if (strcasecmp(act, "pause") == 0) return 0x00B1;
+    if (strcasecmp(act, "stop") == 0) return 0x00B7;
+    if (strcasecmp(act, "next") == 0 || strcasecmp(act, "next_track") == 0) return 0x00B5;
+    if (strcasecmp(act, "prev") == 0 || strcasecmp(act, "prev_track") == 0) return 0x00B6;
+    if (strcasecmp(act, "power") == 0) return 0x0030;
+    return 0;
+}
+
+static int lua_ble_hid_init(lua_State *L)
+{
+    const char *name = luaL_optstring(L, 1, "nano-esp-bot");
+    esp_err_t err = chal_ble_hid_init(name);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_start(lua_State *L)
+{
+    esp_err_t err = chal_ble_hid_start();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_stop(lua_State *L)
+{
+    esp_err_t err = chal_ble_hid_stop();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_deinit(lua_State *L)
+{
+    esp_err_t err = chal_ble_hid_deinit();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_status(lua_State *L)
 {
     lua_newtable(L);
+    lua_pushboolean(L, chal_ble_hid_is_initialized());
+    lua_setfield(L, -2, "initialized");
+    lua_pushboolean(L, chal_ble_hid_is_started());
+    lua_setfield(L, -2, "started");
+    lua_pushboolean(L, chal_ble_hid_is_connected());
+    lua_setfield(L, -2, "connected");
+    return 1;
+}
+
+static int lua_ble_hid_text(lua_State *L)
+{
+    const char *str = luaL_checkstring(L, 1);
+    esp_err_t err = chal_ble_hid_send_text(str);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_key(lua_State *L)
+{
+    const char *name = luaL_checkstring(L, 1);
+    const char *gesture = luaL_optstring(L, 2, "click");
+    bool press = false;
+    bool release = false;
+
+    if (strcasecmp(gesture, "click") == 0) {
+        press = true;
+        release = true;
+    } else if (strcasecmp(gesture, "press") == 0) {
+        press = true;
+    } else if (strcasecmp(gesture, "release") == 0) {
+        release = true;
+    } else {
+        return luaL_error(L, "invalid gesture: %s (expected 'click', 'press', or 'release')", gesture);
+    }
+
+    esp_err_t err = chal_ble_hid_send_key(name, press, release);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_combo(lua_State *L)
+{
+    uint8_t mod_mask = 0;
+    const char *key_name = NULL;
+
+    if (lua_istable(L, 1)) {
+        lua_Integer len = luaL_len(L, 1);
+        for (lua_Integer i = 1; i <= len; i++) {
+            lua_rawgeti(L, 1, i);
+            const char *m = lua_tostring(L, -1);
+            mod_mask |= parse_modifier_str(m);
+            lua_pop(L, 1);
+        }
+        key_name = luaL_checkstring(L, 2);
+    } else {
+        int top = lua_gettop(L);
+        if (top < 1) {
+            return luaL_error(L, "ble_hid.combo requires at least 1 key argument");
+        }
+        key_name = luaL_checkstring(L, top);
+        for (int i = 1; i < top; i++) {
+            const char *m = luaL_checkstring(L, i);
+            mod_mask |= parse_modifier_str(m);
+        }
+    }
+
+    esp_err_t err = chal_ble_hid_send_combo(mod_mask, key_name);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_mouse_move(lua_State *L)
+{
+    lua_Integer dx = luaL_checkinteger(L, 1);
+    lua_Integer dy = luaL_checkinteger(L, 2);
+
+    if (dx < -127) dx = -127;
+    if (dx > 127) dx = 127;
+    if (dy < -127) dy = -127;
+    if (dy > 127) dy = 127;
+
+    esp_err_t err = chal_ble_hid_send_mouse(0, (int8_t)dx, (int8_t)dy, 0);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_mouse_button(lua_State *L)
+{
+    const char *btn_name = luaL_checkstring(L, 1);
+    const char *gesture = luaL_optstring(L, 2, "click");
+    uint8_t btn_mask = parse_mouse_button(btn_name);
+
+    if (btn_mask == 0) {
+        return luaL_error(L, "invalid mouse button: %s (expected 'left', 'right', or 'middle')", btn_name);
+    }
+
+    esp_err_t err = ESP_OK;
+    if (strcasecmp(gesture, "click") == 0) {
+        err = chal_ble_hid_send_mouse(btn_mask, 0, 0, 0);
+        if (err == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(15));
+            err = chal_ble_hid_send_mouse(0, 0, 0, 0);
+        }
+    } else if (strcasecmp(gesture, "press") == 0) {
+        err = chal_ble_hid_send_mouse(btn_mask, 0, 0, 0);
+    } else if (strcasecmp(gesture, "release") == 0) {
+        err = chal_ble_hid_send_mouse(0, 0, 0, 0);
+    } else if (strcasecmp(gesture, "double_click") == 0) {
+        err = chal_ble_hid_send_mouse(btn_mask, 0, 0, 0);
+        if (err == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(15));
+            err = chal_ble_hid_send_mouse(0, 0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(60));
+            err = chal_ble_hid_send_mouse(btn_mask, 0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(15));
+            err = chal_ble_hid_send_mouse(0, 0, 0, 0);
+        }
+    } else {
+        return luaL_error(L, "invalid mouse gesture: %s (expected 'click', 'press', 'release', or 'double_click')", gesture);
+    }
+
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_mouse_scroll(lua_State *L)
+{
+    lua_Integer wheel = luaL_checkinteger(L, 1);
+    if (wheel < -127) wheel = -127;
+    if (wheel > 127) wheel = 127;
+
+    esp_err_t err = chal_ble_hid_send_mouse(0, 0, 0, (int8_t)wheel);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_media(lua_State *L)
+{
+    const char *action = luaL_checkstring(L, 1);
+    const char *gesture = luaL_optstring(L, 2, "click");
+    uint16_t usage = lookup_media_usage(action);
+
+    if (usage == 0) {
+        return luaL_error(L, "invalid media action: %s", action);
+    }
+
+    esp_err_t err = ESP_OK;
+    if (strcasecmp(gesture, "click") == 0) {
+        err = chal_ble_hid_send_consumer(usage);
+        if (err == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(15));
+            err = chal_ble_hid_send_consumer(0);
+        }
+    } else if (strcasecmp(gesture, "press") == 0) {
+        err = chal_ble_hid_send_consumer(usage);
+    } else if (strcasecmp(gesture, "release") == 0) {
+        err = chal_ble_hid_send_consumer(0);
+    } else {
+        return luaL_error(L, "invalid media gesture: %s (expected 'click', 'press', or 'release')", gesture);
+    }
+
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ble_hid_release_all(lua_State *L)
+{
+    chal_ble_hid_release_all();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static const luaL_Reg s_ble_hid_funcs[] = {
+    {"init", lua_ble_hid_init},
+    {"start", lua_ble_hid_start},
+    {"stop", lua_ble_hid_stop},
+    {"deinit", lua_ble_hid_deinit},
+    {"status", lua_ble_hid_status},
+    {"text", lua_ble_hid_text},
+    {"key", lua_ble_hid_key},
+    {"combo", lua_ble_hid_combo},
+    {"mouse_move", lua_ble_hid_mouse_move},
+    {"mouse_button", lua_ble_hid_mouse_button},
+    {"mouse_scroll", lua_ble_hid_mouse_scroll},
+    {"media", lua_ble_hid_media},
+    {"release_all", lua_ble_hid_release_all},
+    {NULL, NULL}
+};
+
+int luaopen_ble_hid(lua_State *L)
+{
+    luaL_newlib(L, s_ble_hid_funcs);
     return 1;
 }
