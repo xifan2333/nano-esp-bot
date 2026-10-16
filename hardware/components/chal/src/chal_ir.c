@@ -907,8 +907,227 @@ void chal_ir_teardown(void)
     chal_ir_rx_deinit();
 }
 
-int luaopen_ir(lua_State *L)
+static int lua_ir_tx_init(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    uint32_t carrier_hz = (uint32_t)luaL_optinteger(L, 2, IR_NEC_CARRIER_HZ);
+
+    esp_err_t err = chal_ir_tx_init(pin, carrier_hz);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_tx_deinit(lua_State *L)
+{
+    chal_ir_tx_deinit();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_rx_init(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+
+    esp_err_t err = chal_ir_rx_init(pin);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_rx_deinit(lua_State *L)
+{
+    chal_ir_rx_deinit();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_send(lua_State *L)
+{
+    if (lua_istable(L, 1)) {
+        lua_getfield(L, 1, "protocol");
+        const char *proto_str = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        if (proto_str && strcmp(proto_str, "rc5") == 0) {
+            lua_getfield(L, 1, "address");
+            uint8_t addr = (uint8_t)luaL_optinteger(L, -1, 0);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 1, "command");
+            uint8_t cmd = (uint8_t)luaL_optinteger(L, -1, 0);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 1, "toggle");
+            bool toggle = lua_toboolean(L, -1);
+            lua_pop(L, 1);
+
+            esp_err_t err = chal_ir_send_rc5(addr, cmd, toggle);
+            if (err != ESP_OK) {
+                lua_pushnil(L);
+                lua_pushstring(L, esp_err_to_name(err));
+                return 2;
+            }
+            lua_pushboolean(L, 1);
+            return 1;
+        } else {
+            lua_getfield(L, 1, "address");
+            uint16_t addr = (uint16_t)luaL_optinteger(L, -1, 0);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 1, "command");
+            uint16_t cmd = (uint16_t)luaL_optinteger(L, -1, 0);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 1, "repeat");
+            uint32_t rep = (uint32_t)luaL_optinteger(L, -1, 0);
+            lua_pop(L, 1);
+
+            esp_err_t err = chal_ir_send_nec(addr, cmd, rep);
+            if (err != ESP_OK) {
+                lua_pushnil(L);
+                lua_pushstring(L, esp_err_to_name(err));
+                return 2;
+            }
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+
+    uint16_t addr = (uint16_t)luaL_checkinteger(L, 1);
+    uint16_t cmd = (uint16_t)luaL_checkinteger(L, 2);
+    uint32_t rep = (uint32_t)luaL_optinteger(L, 3, 0);
+
+    esp_err_t err = chal_ir_send_nec(addr, cmd, rep);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_send_nec(lua_State *L)
+{
+    uint16_t addr = (uint16_t)luaL_checkinteger(L, 1);
+    uint16_t cmd = (uint16_t)luaL_checkinteger(L, 2);
+    uint32_t rep = (uint32_t)luaL_optinteger(L, 3, 0);
+
+    esp_err_t err = chal_ir_send_nec(addr, cmd, rep);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_send_rc5(lua_State *L)
+{
+    uint8_t addr = (uint8_t)luaL_checkinteger(L, 1);
+    uint8_t cmd = (uint8_t)luaL_checkinteger(L, 2);
+    bool toggle = lua_toboolean(L, 3);
+
+    esp_err_t err = chal_ir_send_rc5(addr, cmd, toggle);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_ir_recv(lua_State *L)
+{
+    uint32_t timeout_ms = (uint32_t)luaL_optinteger(L, 1, 0);
+    chal_ir_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+
+    bool ok = chal_ir_recv(&frame, timeout_ms);
+    if (!ok) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_newtable(L);
+    if (frame.proto == CHAL_IR_PROTO_NEC) {
+        lua_pushstring(L, "nec");
+        lua_setfield(L, -2, "protocol");
+        lua_pushinteger(L, frame.address);
+        lua_setfield(L, -2, "address");
+        lua_pushinteger(L, frame.command);
+        lua_setfield(L, -2, "command");
+        lua_pushboolean(L, frame.repeat);
+        lua_setfield(L, -2, "repeat");
+    } else {
+        lua_pushstring(L, "rc5");
+        lua_setfield(L, -2, "protocol");
+        lua_pushinteger(L, frame.address);
+        lua_setfield(L, -2, "address");
+        lua_pushinteger(L, frame.command);
+        lua_setfield(L, -2, "command");
+        lua_pushboolean(L, frame.toggle);
+        lua_setfield(L, -2, "toggle");
+    }
+
+    return 1;
+}
+
+static int lua_ir_status(lua_State *L)
 {
     lua_newtable(L);
+
+    // tx sub-table
+    lua_newtable(L);
+    lua_pushboolean(L, chal_ir_tx_is_initialized());
+    lua_setfield(L, -2, "initialized");
+    if (chal_ir_tx_is_initialized()) {
+        lua_pushinteger(L, chal_ir_tx_get_pin());
+        lua_setfield(L, -2, "pin");
+    }
+    lua_setfield(L, -2, "tx");
+
+    // rx sub-table
+    lua_newtable(L);
+    lua_pushboolean(L, chal_ir_rx_is_initialized());
+    lua_setfield(L, -2, "initialized");
+    if (chal_ir_rx_is_initialized()) {
+        lua_pushinteger(L, chal_ir_rx_get_pin());
+        lua_setfield(L, -2, "pin");
+        lua_pushinteger(L, chal_ir_rx_get_queued_count());
+        lua_setfield(L, -2, "queued");
+    }
+    lua_setfield(L, -2, "rx");
+
+    return 1;
+}
+
+static const luaL_Reg ir_funcs[] = {
+    {"tx_init", lua_ir_tx_init},
+    {"tx_deinit", lua_ir_tx_deinit},
+    {"rx_init", lua_ir_rx_init},
+    {"rx_deinit", lua_ir_rx_deinit},
+    {"send", lua_ir_send},
+    {"send_nec", lua_ir_send_nec},
+    {"send_rc5", lua_ir_send_rc5},
+    {"recv", lua_ir_recv},
+    {"status", lua_ir_status},
+    {NULL, NULL}
+};
+
+int luaopen_ir(lua_State *L)
+{
+    luaL_newlib(L, ir_funcs);
     return 1;
 }
