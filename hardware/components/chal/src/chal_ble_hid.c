@@ -1,4 +1,5 @@
 #include "chal_ble_hid.h"
+#include "chal_nimble.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,21 +8,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "nvs_flash.h"
 #include "esp_log.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs_adv.h"
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "store/config/ble_store_config.h"
 #include "esp_hidd.h"
 #include "esp_hid_common.h"
 #include "lauxlib.h"
-
-extern void ble_store_config_init(void);
 
 static const char *TAG = "chal_ble_hid";
 
@@ -434,14 +429,6 @@ static void ble_hidd_event_callback(void *handler_args, esp_event_base_t base, i
     }
 }
 
-static void ble_hid_host_task(void *param)
-{
-    (void)param;
-    ESP_LOGI(TAG, "NimBLE host task started");
-    nimble_port_run();
-    nimble_port_freertos_deinit();
-}
-
 esp_err_t chal_ble_hid_init(const char *device_name)
 {
     if (!s_ble_hid_mutex) {
@@ -465,20 +452,8 @@ esp_err_t chal_ble_hid_init(const char *device_name)
         s_device_name[sizeof(s_device_name) - 1] = '\0';
     }
 
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        ret = nvs_flash_init();
-    }
+    esp_err_t ret = chal_nimble_ensure_inited();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NVS flash init failed: %s", esp_err_to_name(ret));
-        xSemaphoreGive(s_ble_hid_mutex);
-        return ret;
-    }
-
-    ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(ret));
         xSemaphoreGive(s_ble_hid_mutex);
         return ret;
     }
@@ -505,15 +480,20 @@ esp_err_t chal_ble_hid_init(const char *device_name)
     ret = esp_hidd_dev_init(&hid_cfg, ESP_HID_TRANSPORT_BLE, ble_hidd_event_callback, &s_hid_dev);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_hidd_dev_init failed: %s", esp_err_to_name(ret));
-        nimble_port_deinit();
+        chal_nimble_deinit();
         xSemaphoreGive(s_ble_hid_mutex);
         return ret;
     }
 
-    ble_store_config_init();
-    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-
-    nimble_port_freertos_init(ble_hid_host_task);
+    ret = chal_nimble_start_host();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "chal_nimble_start_host failed: %s", esp_err_to_name(ret));
+        esp_hidd_dev_deinit(s_hid_dev);
+        s_hid_dev = NULL;
+        chal_nimble_deinit();
+        xSemaphoreGive(s_ble_hid_mutex);
+        return ret;
+    }
 
     s_inited = true;
     xSemaphoreGive(s_ble_hid_mutex);
@@ -565,8 +545,7 @@ esp_err_t chal_ble_hid_deinit(void)
             esp_hidd_dev_deinit(s_hid_dev);
             s_hid_dev = NULL;
         }
-        nimble_port_stop();
-        nimble_port_deinit();
+        chal_nimble_deinit();
         s_inited = false;
         xSemaphoreGive(s_ble_hid_mutex);
         return ESP_OK;
