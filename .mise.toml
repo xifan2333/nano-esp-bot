@@ -24,10 +24,6 @@ run = "hk fix"
 description = "Auto-fix issues in all files via hk"
 run = "hk fix --all"
 
-[tasks."hw:build"]
-description = "Notice: Local hw:build is disabled by repository convention (delegated to CI)"
-run = "echo 'Error: Local firmware compilation is disabled by repository policy. Push your branch and verify via: gh pr checks' && exit 1"
-
 [tasks."hw:download"]
 description = "Download the latest CI-built firmware artifact into dist/firmware"
 run = "gh run download -n nano-esp-bot-firmware -D ${FIRMWARE_DIR:-dist/firmware}"
@@ -38,9 +34,9 @@ run = """
 esptool --chip esp32s3 \
   --port ${ESPPORT:-/dev/ttyACM0} --baud ${ESPBAUD:-460800} \
   write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
-  0x0 ${FIRMWARE_DIR:-dist/firmware}/hardware/build/bootloader/bootloader.bin \
-  0x8000 ${FIRMWARE_DIR:-dist/firmware}/hardware/build/partition_table/partition-table.bin \
-  0x10000 ${FIRMWARE_DIR:-dist/firmware}/hardware/build/nano-esp-bot-hw.bin
+  0x0 ${FIRMWARE_DIR:-dist/firmware}/bootloader/bootloader.bin \
+  0x8000 ${FIRMWARE_DIR:-dist/firmware}/partition_table/partition-table.bin \
+  0x10000 ${FIRMWARE_DIR:-dist/firmware}/nano-esp-bot-hw.bin
 """
 
 [tasks."hw:monitor"]
