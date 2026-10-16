@@ -13,10 +13,17 @@
 #include "storage.h"
 #include "chal_gpio.h"
 #include "chal_delay.h"
+#include "chal_wifi.h"
 
 static const char *TAG = "nano-core";
 
 #define INIT_LUA_PATH "/storage/init.lua"
+
+static void on_supervisor_break(void)
+{
+    sandbox_break();
+    chal_wifi_teardown();
+}
 
 static void init_script_task(void *pvParameters)
 {
@@ -63,9 +70,10 @@ void app_main(void)
     ESP_ERROR_CHECK(ledger_init());
     ESP_ERROR_CHECK(storage_init());
     ESP_ERROR_CHECK(sandbox_init());
-    rpc_set_break_callback((rpc_break_callback_t)sandbox_break);
+    rpc_set_break_callback(on_supervisor_break);
     ESP_ERROR_CHECK(sandbox_register_module("gpio", luaopen_gpio));
     ESP_ERROR_CHECK(sandbox_register_module("delay", luaopen_delay));
+    ESP_ERROR_CHECK(sandbox_register_module("wifi", luaopen_wifi));
     ESP_ERROR_CHECK(rpc_init());
 
     if (storage_file_exists("init.lua")) {
