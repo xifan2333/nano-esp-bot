@@ -84,11 +84,22 @@ esp_err_t storage_write_file(const char *rel_path, const char *data, size_t data
 esp_err_t storage_delete_file(const char *rel_path);
 
 /**
- * @brief Register storage JSON-RPC 2.0 methods (storage.info, storage.list, storage.read, storage.write, storage.delete).
+ * @brief Callback invoked for each regular file discovered during directory iteration.
  *
+ * @param name File name (e.g. "init.lua").
+ * @param size File size in bytes.
+ * @param user_data Caller-provided context pointer.
+ */
+typedef void (*storage_list_cb_t)(const char *name, size_t size, void *user_data);
+
+/**
+ * @brief Enumerate all files stored in the SPIFFS filesystem.
+ *
+ * @param cb Callback called for every file found.
+ * @param user_data User pointer passed to cb.
  * @return esp_err_t ESP_OK on success.
  */
-esp_err_t storage_register_rpc(void);
+esp_err_t storage_list_files(storage_list_cb_t cb, void *user_data);
 
 #ifdef __cplusplus
 }
