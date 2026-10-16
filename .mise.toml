@@ -26,16 +26,17 @@ description = "Auto-fix issues in all files via hk"
 run = "hk fix --all"
 
 [tasks."hw:build"]
-description = "Build ESP32-S3 firmware under hardware/"
-dir = "hardware"
-run = "idf.py build"
+description = "Notice: Local hw:build is disabled by repository convention (delegated to CI)"
+run = "echo 'Error: Local firmware compilation is disabled by repository policy. Push your branch and verify via: gh pr checks' && exit 1"
+
+[tasks."hw:download"]
+description = "Download latest built firmware artifacts from GitHub Actions CI"
+run = "bash scripts/download-firmware.sh"
 
 [tasks."hw:flash"]
-description = "Flash ESP32-S3 firmware"
-dir = "hardware"
-run = "idf.py flash"
+description = "Flash downloaded firmware to connected ESP32-S3 via esptool"
+run = "bash scripts/flash-firmware.sh"
 
 [tasks."hw:monitor"]
 description = "Monitor ESP32-S3 serial output"
-dir = "hardware"
-run = "idf.py monitor"
+run = "bash scripts/monitor-device.sh"
