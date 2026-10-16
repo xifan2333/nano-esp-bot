@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
@@ -54,11 +55,12 @@ static size_t rmt_encode_ir_nec(rmt_encoder_t *encoder, rmt_channel_handle_t cha
                                 const void *primary_data, size_t data_size,
                                 rmt_encode_state_t *ret_state)
 {
+    (void)data_size;
     rmt_ir_nec_encoder_t *nec_encoder = __containerof(encoder, rmt_ir_nec_encoder_t, base);
     rmt_encode_state_t session_state = RMT_ENCODING_RESET;
     rmt_encode_state_t state = RMT_ENCODING_RESET;
     size_t encoded_symbols = 0;
-    ir_nec_scan_code_t *scan_code = (ir_nec_scan_code_t *)primary_data;
+    const ir_nec_scan_code_t *scan_code = (const ir_nec_scan_code_t *)primary_data;
     rmt_encoder_handle_t copy_encoder = nec_encoder->copy_encoder;
     rmt_encoder_handle_t bytes_encoder = nec_encoder->bytes_encoder;
 
@@ -342,6 +344,75 @@ static size_t rc5_build_symbols(uint8_t address, uint8_t command, bool toggle, r
     return 14;
 }
 
+static bool rc5_parse_frame(const rmt_symbol_word_t *symbols, size_t num_symbols,
+                            uint8_t *out_address, uint8_t *out_command, bool *out_toggle)
+{
+    if (num_symbols < 7 || num_symbols > 30) {
+        return false;
+    }
+
+    // Demodulated RC5 is active low.
+    // Convert duration stream into half-bit levels (0=active carrier, 1=idle space)
+    uint8_t half_levels[32];
+    size_t half_idx = 0;
+
+    for (size_t s = 0; s < num_symbols && half_idx < 32; s++) {
+        uint32_t d0 = symbols[s].duration0;
+        uint32_t d1 = symbols[s].duration1;
+
+        int ticks0 = (int)((d0 + (RC5_HALF_BIT_US / 2)) / RC5_HALF_BIT_US);
+        if (ticks0 < 1 || ticks0 > 2) {
+            return false;
+        }
+        for (int k = 0; k < ticks0 && half_idx < 32; k++) {
+            half_levels[half_idx++] = symbols[s].level0;
+        }
+
+        if (d1 > 0 && d1 < 5000) {
+            int ticks1 = (int)((d1 + (RC5_HALF_BIT_US / 2)) / RC5_HALF_BIT_US);
+            if (ticks1 < 1 || ticks1 > 2) {
+                return false;
+            }
+            for (int k = 0; k < ticks1 && half_idx < 32; k++) {
+                half_levels[half_idx++] = symbols[s].level1;
+            }
+        }
+    }
+
+    if (half_idx < 26) {
+        return false;
+    }
+
+    uint16_t decoded_bits = 0;
+    for (size_t b = 0; b < 14; b++) {
+        if (2 * b + 1 >= half_idx) {
+            // Trailing half-bit may not be recorded if receiver goes idle
+            break;
+        }
+        uint8_t h0 = half_levels[2 * b];
+        uint8_t h1 = half_levels[2 * b + 1];
+        if (h0 == 0 && h1 == 1) {
+            // Logic 0
+            decoded_bits = (decoded_bits << 1);
+        } else if (h0 == 1 && h1 == 0) {
+            // Logic 1
+            decoded_bits = (decoded_bits << 1) | 1;
+        } else {
+            return false;
+        }
+    }
+
+    // Verify S1 = 1
+    if (!((decoded_bits >> 13) & 1)) {
+        return false;
+    }
+
+    *out_toggle = ((decoded_bits >> 11) & 1) ? true : false;
+    *out_address = (uint8_t)((decoded_bits >> 6) & 0x1F);
+    *out_command = (uint8_t)(decoded_bits & 0x3F);
+    return true;
+}
+
 // Global state variables
 static SemaphoreHandle_t s_ir_mutex = NULL;
 static bool s_tx_initialized = false;
@@ -356,25 +427,208 @@ static rmt_channel_handle_t s_rx_channel = NULL;
 static QueueHandle_t s_rx_event_queue = NULL;
 static QueueHandle_t s_rx_frame_queue = NULL;
 static TaskHandle_t s_rx_task_handle = NULL;
+static rmt_symbol_word_t s_rx_raw_symbols[IR_RX_MEM_BLOCK_SYMBOLS];
+
+static const rmt_receive_config_t s_rx_receive_cfg = {
+    .signal_range_min_ns = 1250,     // 1.25us min pulse (avoids HF glitches)
+    .signal_range_max_ns = 12000000, // 12ms max duration (accommodates 9ms lead pulse + tolerance)
+};
+
+static bool ir_rmt_rx_done_callback(rmt_channel_handle_t channel, const rmt_rx_done_event_data_t *edata, void *user_data)
+{
+    (void)channel;
+    BaseType_t high_task_wakeup = pdFALSE;
+    QueueHandle_t queue = (QueueHandle_t)user_data;
+    if (queue) {
+        xQueueSendFromISR(queue, edata, &high_task_wakeup);
+    }
+    return high_task_wakeup == pdTRUE;
+}
+
+static void ir_rx_parser_task(void *pvParameters)
+{
+    (void)pvParameters;
+    rmt_rx_done_event_data_t rx_data;
+
+    while (s_rx_initialized) {
+        if (xQueueReceive(s_rx_event_queue, &rx_data, pdMS_TO_TICKS(50)) == pdPASS) {
+            if (rx_data.num_symbols > 0 && rx_data.received_symbols != NULL) {
+                chal_ir_frame_t frame;
+                memset(&frame, 0, sizeof(frame));
+                uint16_t nec_addr = 0, nec_cmd = 0;
+                bool nec_rep = false;
+                uint8_t rc5_addr = 0, rc5_cmd = 0;
+                bool rc5_tog = false;
+
+                if (nec_parse_frame(rx_data.received_symbols, rx_data.num_symbols,
+                                    &nec_addr, &nec_cmd, &nec_rep)) {
+                    frame.proto = CHAL_IR_PROTO_NEC;
+                    frame.address = nec_addr;
+                    frame.command = nec_cmd;
+                    frame.repeat = nec_rep;
+                    if (s_rx_frame_queue) {
+                        if (uxQueueSpacesAvailable(s_rx_frame_queue) == 0) {
+                            chal_ir_frame_t drop;
+                            xQueueReceive(s_rx_frame_queue, &drop, 0);
+                        }
+                        xQueueSend(s_rx_frame_queue, &frame, 0);
+                    }
+                } else if (rc5_parse_frame(rx_data.received_symbols, rx_data.num_symbols,
+                                           &rc5_addr, &rc5_cmd, &rc5_tog)) {
+                    frame.proto = CHAL_IR_PROTO_RC5;
+                    frame.address = rc5_addr;
+                    frame.command = rc5_cmd;
+                    frame.toggle = rc5_tog;
+                    if (s_rx_frame_queue) {
+                        if (uxQueueSpacesAvailable(s_rx_frame_queue) == 0) {
+                            chal_ir_frame_t drop;
+                            xQueueReceive(s_rx_frame_queue, &drop, 0);
+                        }
+                        xQueueSend(s_rx_frame_queue, &frame, 0);
+                    }
+                }
+            }
+            if (s_rx_initialized && s_rx_channel) {
+                rmt_receive(s_rx_channel, s_rx_raw_symbols, sizeof(s_rx_raw_symbols), &s_rx_receive_cfg);
+            }
+        }
+    }
+    vTaskDelete(NULL);
+}
 
 esp_err_t chal_ir_tx_init(int gpio_num, uint32_t carrier_hz)
 {
-    (void)gpio_num;
-    (void)carrier_hz;
-    (void)s_tx_channel;
-    (void)s_copy_encoder;
-    (void)s_ir_mutex;
-    rmt_encoder_handle_t enc = NULL;
-    (void)rmt_new_ir_nec_encoder(1000000, &enc);
-    if (enc) {
-        enc->del(enc);
+    if (!ledger_is_pin_safe(gpio_num)) {
+        ESP_LOGE(TAG, "GPIO %d is not safe for IR TX", gpio_num);
+        return ESP_ERR_INVALID_ARG;
     }
+
+    if (!s_ir_mutex) {
+        s_ir_mutex = xSemaphoreCreateMutex();
+        if (!s_ir_mutex) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    xSemaphoreTake(s_ir_mutex, portMAX_DELAY);
+    if (s_tx_initialized) {
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGW(TAG, "IR TX already initialized on GPIO %d", s_tx_gpio);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = ledger_claim_pin(gpio_num, LEDGER_OWNER_SCRIPT, LEDGER_PIN_MODE_RMT, "ir_tx");
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "Failed to claim GPIO %d for IR TX: %s", gpio_num, esp_err_to_name(err));
+        return err;
+    }
+
+    rmt_tx_channel_config_t tx_cfg = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = IR_RESOLUTION_HZ,
+        .mem_block_symbols = 64,
+        .trans_queue_depth = 4,
+        .gpio_num = gpio_num,
+    };
+    err = rmt_new_tx_channel(&tx_cfg, &s_tx_channel);
+    if (err != ESP_OK) {
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_new_tx_channel failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    rmt_carrier_config_t carrier_cfg = {
+        .duty_cycle = 0.33f,
+        .frequency_hz = carrier_hz ? carrier_hz : IR_NEC_CARRIER_HZ,
+    };
+    err = rmt_apply_carrier(s_tx_channel, &carrier_cfg);
+    if (err != ESP_OK) {
+        rmt_del_channel(s_tx_channel);
+        s_tx_channel = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_apply_carrier failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = rmt_new_ir_nec_encoder(IR_RESOLUTION_HZ, &s_nec_encoder);
+    if (err != ESP_OK) {
+        rmt_del_channel(s_tx_channel);
+        s_tx_channel = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_new_ir_nec_encoder failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    rmt_copy_encoder_config_t copy_cfg = {};
+    err = rmt_new_copy_encoder(&copy_cfg, &s_copy_encoder);
+    if (err != ESP_OK) {
+        s_nec_encoder->del(s_nec_encoder);
+        s_nec_encoder = NULL;
+        rmt_del_channel(s_tx_channel);
+        s_tx_channel = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_new_copy_encoder failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = rmt_enable(s_tx_channel);
+    if (err != ESP_OK) {
+        s_copy_encoder->del(s_copy_encoder);
+        s_copy_encoder = NULL;
+        s_nec_encoder->del(s_nec_encoder);
+        s_nec_encoder = NULL;
+        rmt_del_channel(s_tx_channel);
+        s_tx_channel = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_enable failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_tx_initialized = true;
+    s_tx_gpio = gpio_num;
+    xSemaphoreGive(s_ir_mutex);
+    ESP_LOGI(TAG, "IR TX initialized on GPIO %d (carrier %lu Hz)", gpio_num, (unsigned long)carrier_cfg.frequency_hz);
     return ESP_OK;
 }
 
 esp_err_t chal_ir_tx_deinit(void)
 {
-    (void)s_nec_encoder;
+    if (!s_ir_mutex) {
+        return ESP_OK;
+    }
+
+    xSemaphoreTake(s_ir_mutex, portMAX_DELAY);
+    if (!s_tx_initialized) {
+        xSemaphoreGive(s_ir_mutex);
+        return ESP_OK;
+    }
+
+    if (s_tx_channel) {
+        rmt_disable(s_tx_channel);
+        rmt_del_channel(s_tx_channel);
+        s_tx_channel = NULL;
+    }
+    if (s_nec_encoder) {
+        s_nec_encoder->del(s_nec_encoder);
+        s_nec_encoder = NULL;
+    }
+    if (s_copy_encoder) {
+        s_copy_encoder->del(s_copy_encoder);
+        s_copy_encoder = NULL;
+    }
+    if (s_tx_gpio >= 0) {
+        ledger_release_pin(s_tx_gpio, LEDGER_OWNER_SCRIPT);
+        s_tx_gpio = -1;
+    }
+    s_tx_initialized = false;
+    xSemaphoreGive(s_ir_mutex);
+    ESP_LOGI(TAG, "IR TX deinitialized");
     return ESP_OK;
 }
 
@@ -390,35 +644,232 @@ int chal_ir_tx_get_pin(void)
 
 esp_err_t chal_ir_send_nec(uint16_t address, uint16_t command, uint32_t repeat_count)
 {
-    (void)address;
-    (void)command;
-    (void)repeat_count;
-    return ESP_OK;
+    if (!s_tx_initialized || !s_tx_channel || !s_nec_encoder) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(s_ir_mutex, portMAX_DELAY);
+    rmt_ir_nec_encoder_t *enc = __containerof(s_nec_encoder, rmt_ir_nec_encoder_t, base);
+    enc->is_repeat = false;
+    s_nec_encoder->reset(s_nec_encoder);
+
+    ir_nec_scan_code_t scan_code = {
+        .address = address,
+        .command = command,
+    };
+    rmt_transmit_config_t transmit_config = {
+        .loop_count = 0,
+    };
+
+    esp_err_t err = rmt_transmit(s_tx_channel, s_nec_encoder, &scan_code, sizeof(scan_code), &transmit_config);
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_transmit NEC failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    rmt_tx_wait_all_done(s_tx_channel, 200);
+
+    for (uint32_t i = 0; i < repeat_count; i++) {
+        vTaskDelay(pdMS_TO_TICKS(40));
+        enc->is_repeat = true;
+        s_nec_encoder->reset(s_nec_encoder);
+        err = rmt_transmit(s_tx_channel, s_nec_encoder, &scan_code, sizeof(scan_code), &transmit_config);
+        if (err != ESP_OK) {
+            break;
+        }
+        rmt_tx_wait_all_done(s_tx_channel, 200);
+    }
+
+    xSemaphoreGive(s_ir_mutex);
+    return err;
 }
 
 esp_err_t chal_ir_send_rc5(uint8_t address, uint8_t command, bool toggle)
 {
+    if (!s_tx_initialized || !s_tx_channel || !s_copy_encoder) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     rmt_symbol_word_t syms[14];
-    (void)rc5_build_symbols(address, command, toggle, syms);
+    rc5_build_symbols(address, command, toggle, syms);
+
+    xSemaphoreTake(s_ir_mutex, portMAX_DELAY);
+    s_copy_encoder->reset(s_copy_encoder);
+    rmt_transmit_config_t transmit_config = {
+        .loop_count = 0,
+    };
+    esp_err_t err = rmt_transmit(s_tx_channel, s_copy_encoder, syms, sizeof(syms), &transmit_config);
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_transmit RC5 failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    rmt_tx_wait_all_done(s_tx_channel, 200);
+    xSemaphoreGive(s_ir_mutex);
     return ESP_OK;
 }
 
 esp_err_t chal_ir_rx_init(int gpio_num)
 {
-    (void)gpio_num;
-    (void)s_rx_channel;
-    (void)s_rx_event_queue;
-    (void)s_rx_frame_queue;
-    (void)s_rx_task_handle;
-    uint16_t addr = 0, cmd = 0;
-    bool rep = false;
-    rmt_symbol_word_t dummy[2] = {0};
-    (void)nec_parse_frame(dummy, 2, &addr, &cmd, &rep);
+    if (!ledger_is_pin_safe(gpio_num)) {
+        ESP_LOGE(TAG, "GPIO %d is not safe for IR RX", gpio_num);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_ir_mutex) {
+        s_ir_mutex = xSemaphoreCreateMutex();
+        if (!s_ir_mutex) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    xSemaphoreTake(s_ir_mutex, portMAX_DELAY);
+    if (s_rx_initialized) {
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGW(TAG, "IR RX already initialized on GPIO %d", s_rx_gpio);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = ledger_claim_pin(gpio_num, LEDGER_OWNER_SCRIPT, LEDGER_PIN_MODE_RMT, "ir_rx");
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "Failed to claim GPIO %d for IR RX: %s", gpio_num, esp_err_to_name(err));
+        return err;
+    }
+
+    s_rx_event_queue = xQueueCreate(4, sizeof(rmt_rx_done_event_data_t));
+    s_rx_frame_queue = xQueueCreate(IR_RX_QUEUE_DEPTH, sizeof(chal_ir_frame_t));
+    if (!s_rx_event_queue || !s_rx_frame_queue) {
+        if (s_rx_event_queue) {
+            vQueueDelete(s_rx_event_queue);
+            s_rx_event_queue = NULL;
+        }
+        if (s_rx_frame_queue) {
+            vQueueDelete(s_rx_frame_queue);
+            s_rx_frame_queue = NULL;
+        }
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    rmt_rx_channel_config_t rx_cfg = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = IR_RESOLUTION_HZ,
+        .mem_block_symbols = IR_RX_MEM_BLOCK_SYMBOLS,
+        .gpio_num = gpio_num,
+    };
+    err = rmt_new_rx_channel(&rx_cfg, &s_rx_channel);
+    if (err != ESP_OK) {
+        vQueueDelete(s_rx_event_queue);
+        s_rx_event_queue = NULL;
+        vQueueDelete(s_rx_frame_queue);
+        s_rx_frame_queue = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        ESP_LOGE(TAG, "rmt_new_rx_channel failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    rmt_rx_event_callbacks_t cbs = {
+        .on_recv_done = ir_rmt_rx_done_callback,
+    };
+    err = rmt_rx_register_event_callbacks(s_rx_channel, &cbs, s_rx_event_queue);
+    if (err != ESP_OK) {
+        rmt_del_channel(s_rx_channel);
+        s_rx_channel = NULL;
+        vQueueDelete(s_rx_event_queue);
+        s_rx_event_queue = NULL;
+        vQueueDelete(s_rx_frame_queue);
+        s_rx_frame_queue = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        return err;
+    }
+
+    err = rmt_enable(s_rx_channel);
+    if (err != ESP_OK) {
+        rmt_del_channel(s_rx_channel);
+        s_rx_channel = NULL;
+        vQueueDelete(s_rx_event_queue);
+        s_rx_event_queue = NULL;
+        vQueueDelete(s_rx_frame_queue);
+        s_rx_frame_queue = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        return err;
+    }
+
+    s_rx_initialized = true;
+    s_rx_gpio = gpio_num;
+
+    // Start background receiver task
+    BaseType_t task_ret = xTaskCreatePinnedToCore(ir_rx_parser_task, "ir_rx_task", 4096, NULL, 10, &s_rx_task_handle, 1);
+    if (task_ret != pdPASS) {
+        s_rx_initialized = false;
+        rmt_disable(s_rx_channel);
+        rmt_del_channel(s_rx_channel);
+        s_rx_channel = NULL;
+        vQueueDelete(s_rx_event_queue);
+        s_rx_event_queue = NULL;
+        vQueueDelete(s_rx_frame_queue);
+        s_rx_frame_queue = NULL;
+        ledger_release_pin(gpio_num, LEDGER_OWNER_SCRIPT);
+        xSemaphoreGive(s_ir_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Arm the first reception
+    rmt_receive(s_rx_channel, s_rx_raw_symbols, sizeof(s_rx_raw_symbols), &s_rx_receive_cfg);
+
+    xSemaphoreGive(s_ir_mutex);
+    ESP_LOGI(TAG, "IR RX initialized on GPIO %d", gpio_num);
     return ESP_OK;
 }
 
 esp_err_t chal_ir_rx_deinit(void)
 {
+    if (!s_ir_mutex) {
+        return ESP_OK;
+    }
+
+    xSemaphoreTake(s_ir_mutex, portMAX_DELAY);
+    if (!s_rx_initialized) {
+        xSemaphoreGive(s_ir_mutex);
+        return ESP_OK;
+    }
+
+    s_rx_initialized = false;
+
+    if (s_rx_task_handle) {
+        vTaskDelete(s_rx_task_handle);
+        s_rx_task_handle = NULL;
+    }
+
+    if (s_rx_channel) {
+        rmt_disable(s_rx_channel);
+        rmt_del_channel(s_rx_channel);
+        s_rx_channel = NULL;
+    }
+
+    if (s_rx_event_queue) {
+        vQueueDelete(s_rx_event_queue);
+        s_rx_event_queue = NULL;
+    }
+
+    if (s_rx_frame_queue) {
+        vQueueDelete(s_rx_frame_queue);
+        s_rx_frame_queue = NULL;
+    }
+
+    if (s_rx_gpio >= 0) {
+        ledger_release_pin(s_rx_gpio, LEDGER_OWNER_SCRIPT);
+        s_rx_gpio = -1;
+    }
+
+    xSemaphoreGive(s_ir_mutex);
+    ESP_LOGI(TAG, "IR RX deinitialized");
     return ESP_OK;
 }
 
@@ -434,18 +885,26 @@ int chal_ir_rx_get_pin(void)
 
 uint32_t chal_ir_rx_get_queued_count(void)
 {
-    return 0;
+    if (!s_rx_initialized || !s_rx_frame_queue) {
+        return 0;
+    }
+    return (uint32_t)uxQueueMessagesWaiting(s_rx_frame_queue);
 }
 
 bool chal_ir_recv(chal_ir_frame_t *out_frame, uint32_t timeout_ms)
 {
-    (void)out_frame;
-    (void)timeout_ms;
-    return false;
+    if (!s_rx_initialized || !s_rx_frame_queue || !out_frame) {
+        return false;
+    }
+
+    TickType_t wait_ticks = timeout_ms ? pdMS_TO_TICKS(timeout_ms) : 0;
+    return xQueueReceive(s_rx_frame_queue, out_frame, wait_ticks) == pdPASS;
 }
 
 void chal_ir_teardown(void)
 {
+    chal_ir_tx_deinit();
+    chal_ir_rx_deinit();
 }
 
 int luaopen_ir(lua_State *L)
