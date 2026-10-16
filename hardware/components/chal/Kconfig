@@ -1,0 +1,47 @@
+menu "nano-esp-bot C-HAL Configuration"
+
+    menuconfig NANO_ENABLE_LVGL
+        bool "Enable Decoupled LVGL GUI Engine (require(\"lvgl\"))"
+        default y
+        help
+            Enables the decoupled LVGL graphics and widget subsystem.
+            When enabled, LVGL is compiled and wired to chal_lcd's SPI DMA
+            display flush interface, and exposed to Lua via require("lvgl").
+            When disabled, the firmware excludes LVGL completely, keeping
+            the microkernel lean with maximum flash headroom.
+
+    if NANO_ENABLE_LVGL
+
+        config NANO_LVGL_TICK_PERIOD_MS
+            int "LVGL tick & timer handler task period (ms)"
+            default 10
+            range 1 100
+            help
+                Period in milliseconds for the background FreeRTOS task to invoke
+                lv_timer_handler() and lv_tick_inc().
+
+        config NANO_LVGL_BUFFER_LINES
+            int "LVGL partial display buffer height in lines"
+            default 20
+            range 5 120
+            help
+                Number of scanlines allocated in internal SRAM for the LVGL
+                rendering buffer.
+
+        config NANO_LVGL_TASK_STACK_SIZE
+            int "LVGL FreeRTOS background task stack size (bytes)"
+            default 6144
+            range 4096 16384
+            help
+                Stack size in bytes for the dedicated LVGL rendering task.
+
+        config NANO_LVGL_TASK_PRIORITY
+            int "LVGL FreeRTOS background task priority"
+            default 4
+            range 1 10
+            help
+                Priority of the LVGL background rendering task.
+
+    endif # NANO_ENABLE_LVGL
+
+endmenu

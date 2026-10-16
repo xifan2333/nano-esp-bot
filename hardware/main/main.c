@@ -25,6 +25,9 @@
 #include "chal_adc.h"
 #include "chal_button.h"
 #include "chal_lcd.h"
+#if CONFIG_NANO_ENABLE_LVGL
+#include "chal_lvgl.h"
+#endif
 
 static const char *TAG = "nano-core";
 
@@ -45,6 +48,9 @@ static void on_supervisor_break(void)
     chal_adc_teardown();
     chal_button_teardown();
     chal_lcd_teardown();
+#if CONFIG_NANO_ENABLE_LVGL
+    chal_lvgl_teardown();
+#endif
 }
 
 static void init_script_task(void *pvParameters)
@@ -107,6 +113,9 @@ void app_main(void)
     ESP_ERROR_CHECK(sandbox_register_module("adc", luaopen_adc));
     ESP_ERROR_CHECK(sandbox_register_module("button", luaopen_button));
     ESP_ERROR_CHECK(sandbox_register_module("lcd", luaopen_lcd));
+#if CONFIG_NANO_ENABLE_LVGL
+    ESP_ERROR_CHECK(sandbox_register_module("lvgl", luaopen_lvgl));
+#endif
     ESP_ERROR_CHECK(rpc_init());
 
     if (storage_file_exists("init.lua")) {
