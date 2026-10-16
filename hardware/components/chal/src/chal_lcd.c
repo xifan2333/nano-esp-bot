@@ -432,8 +432,271 @@ void chal_lcd_teardown(void)
     chal_lcd_deinit();
 }
 
-int luaopen_lcd(lua_State *L)
+static chal_lcd_driver_t parse_driver(const char *driver_str)
+{
+    if (!driver_str) return CHAL_LCD_DRIVER_ST7789;
+    if (strcasecmp(driver_str, "st7789") == 0) return CHAL_LCD_DRIVER_ST7789;
+    if (strcasecmp(driver_str, "gc9a01") == 0) return CHAL_LCD_DRIVER_GC9A01;
+    if (strcasecmp(driver_str, "ili9341") == 0) return CHAL_LCD_DRIVER_ILI9341;
+    if (strcasecmp(driver_str, "st7735") == 0) return CHAL_LCD_DRIVER_ST7735;
+    return CHAL_LCD_DRIVER_ST7789;
+}
+
+static const char *driver_to_string(chal_lcd_driver_t driver)
+{
+    switch (driver) {
+    case CHAL_LCD_DRIVER_ST7789:  return "st7789";
+    case CHAL_LCD_DRIVER_GC9A01:  return "gc9a01";
+    case CHAL_LCD_DRIVER_ILI9341: return "ili9341";
+    case CHAL_LCD_DRIVER_ST7735:  return "st7735";
+    default:                      return "custom";
+    }
+}
+
+static int get_opt_field_int(lua_State *L, int table_idx, const char *key, int default_val)
+{
+    lua_getfield(L, table_idx, key);
+    int val = default_val;
+    if (!lua_isnil(L, -1)) {
+        val = (int)lua_tointeger(L, -1);
+    }
+    lua_pop(L, 1);
+    return val;
+}
+
+static bool get_opt_field_bool(lua_State *L, int table_idx, const char *key, bool default_val)
+{
+    lua_getfield(L, table_idx, key);
+    bool val = default_val;
+    if (!lua_isnil(L, -1)) {
+        val = lua_toboolean(L, -1);
+    }
+    lua_pop(L, 1);
+    return val;
+}
+
+static int lua_lcd_init(lua_State *L)
+{
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    chal_lcd_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    lua_getfield(L, 1, "driver");
+    cfg.driver = parse_driver(lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    cfg.sclk_pin = get_opt_field_int(L, 1, "sclk", -1);
+    if (cfg.sclk_pin < 0) cfg.sclk_pin = get_opt_field_int(L, 1, "sclk_pin", -1);
+
+    cfg.mosi_pin = get_opt_field_int(L, 1, "mosi", -1);
+    if (cfg.mosi_pin < 0) cfg.mosi_pin = get_opt_field_int(L, 1, "mosi_pin", -1);
+
+    cfg.cs_pin = get_opt_field_int(L, 1, "cs", -1);
+    if (cfg.cs_pin < 0) cfg.cs_pin = get_opt_field_int(L, 1, "cs_pin", -1);
+
+    cfg.dc_pin = get_opt_field_int(L, 1, "dc", -1);
+    if (cfg.dc_pin < 0) cfg.dc_pin = get_opt_field_int(L, 1, "dc_pin", -1);
+
+    cfg.rst_pin = get_opt_field_int(L, 1, "rst", -1);
+    if (cfg.rst_pin < 0) cfg.rst_pin = get_opt_field_int(L, 1, "rst_pin", -1);
+
+    cfg.backlight_pin = get_opt_field_int(L, 1, "backlight", -1);
+    if (cfg.backlight_pin < 0) cfg.backlight_pin = get_opt_field_int(L, 1, "backlight_pin", -1);
+
+    cfg.width = (uint16_t)get_opt_field_int(L, 1, "width", LCD_DEFAULT_WIDTH);
+    cfg.height = (uint16_t)get_opt_field_int(L, 1, "height", LCD_DEFAULT_HEIGHT);
+    cfg.x_offset = (uint16_t)get_opt_field_int(L, 1, "x_offset", 0);
+    cfg.y_offset = (uint16_t)get_opt_field_int(L, 1, "y_offset", 0);
+    cfg.speed_hz = (uint32_t)get_opt_field_int(L, 1, "speed_hz", LCD_DEFAULT_SPI_FREQ);
+    cfg.rotation = (uint16_t)get_opt_field_int(L, 1, "rotation", 0);
+
+    bool def_inv = (cfg.driver == CHAL_LCD_DRIVER_GC9A01);
+    cfg.invert_color = get_opt_field_bool(L, 1, "invert", def_inv);
+    cfg.bgr_order = get_opt_field_bool(L, 1, "bgr", true);
+
+    if (cfg.sclk_pin < 0 || cfg.mosi_pin < 0 || cfg.cs_pin < 0 || cfg.dc_pin < 0) {
+        return luaL_error(L, "missing required SPI LCD pins: sclk, mosi, cs, dc");
+    }
+
+    esp_err_t err = chal_lcd_init(&cfg);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_deinit(lua_State *L)
+{
+    chal_lcd_deinit();
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_clear(lua_State *L)
+{
+    uint16_t color = (uint16_t)luaL_optinteger(L, 1, 0x0000);
+    esp_err_t err = chal_lcd_clear(color);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_fill(lua_State *L)
+{
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int w = (int)luaL_checkinteger(L, 3);
+    int h = (int)luaL_checkinteger(L, 4);
+    uint16_t color = (uint16_t)luaL_checkinteger(L, 5);
+
+    esp_err_t err = chal_lcd_fill(x, y, w, h, color);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_draw(lua_State *L)
+{
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int w = (int)luaL_checkinteger(L, 3);
+    int h = (int)luaL_checkinteger(L, 4);
+
+    size_t expected_bytes = (size_t)w * h * sizeof(uint16_t);
+    const uint16_t *pixel_data = NULL;
+    uint16_t *temp_buf = NULL;
+
+    if (lua_isstring(L, 5)) {
+        size_t len = 0;
+        const char *raw_str = lua_tolstring(L, 5, &len);
+        if (len < expected_bytes) {
+            return luaL_error(L, "data buffer size (%zu) less than required (%zu bytes)", len, expected_bytes);
+        }
+        pixel_data = (const uint16_t *)raw_str;
+    } else if (lua_istable(L, 5)) {
+        size_t len = luaL_len(L, 5);
+        if (len < (size_t)(w * h)) {
+            return luaL_error(L, "table pixel count (%zu) less than required (%d)", len, w * h);
+        }
+        temp_buf = (uint16_t *)malloc(expected_bytes);
+        if (!temp_buf) {
+            lua_pushnil(L);
+            lua_pushstring(L, "out of memory");
+            return 2;
+        }
+        for (size_t i = 0; i < (size_t)(w * h); i++) {
+            lua_rawgeti(L, 5, (lua_Integer)(i + 1));
+            uint16_t c = (uint16_t)lua_tointeger(L, -1);
+            temp_buf[i] = (uint16_t)((c << 8) | (c >> 8)); // swap for big-endian
+            lua_pop(L, 1);
+        }
+        pixel_data = temp_buf;
+    } else {
+        return luaL_error(L, "expected binary string or table of pixels for data");
+    }
+
+    esp_err_t err = chal_lcd_draw_bitmap(x, y, w, h, pixel_data);
+    if (temp_buf) {
+        free(temp_buf);
+    }
+
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_rotation(lua_State *L)
+{
+    uint16_t deg = (uint16_t)luaL_checkinteger(L, 1);
+    esp_err_t err = chal_lcd_set_rotation(deg);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_invert(lua_State *L)
+{
+    bool inv = lua_toboolean(L, 1);
+    esp_err_t err = chal_lcd_invert_color(inv);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_backlight(lua_State *L)
+{
+    bool on = lua_toboolean(L, 1);
+    esp_err_t err = chal_lcd_set_backlight(on);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_lcd_status(lua_State *L)
 {
     lua_newtable(L);
+    lua_pushboolean(L, chal_lcd_is_initialized());
+    lua_setfield(L, -2, "initialized");
+
+    if (chal_lcd_is_initialized()) {
+        lua_pushinteger(L, chal_lcd_get_width());
+        lua_setfield(L, -2, "width");
+        lua_pushinteger(L, chal_lcd_get_height());
+        lua_setfield(L, -2, "height");
+        lua_pushinteger(L, s_lcd_cfg.rotation);
+        lua_setfield(L, -2, "rotation");
+        lua_pushstring(L, driver_to_string(s_lcd_cfg.driver));
+        lua_setfield(L, -2, "driver");
+    }
+
+    return 1;
+}
+
+static const luaL_Reg lcd_funcs[] = {
+    {"init", lua_lcd_init},
+    {"deinit", lua_lcd_deinit},
+    {"clear", lua_lcd_clear},
+    {"fill", lua_lcd_fill},
+    {"draw", lua_lcd_draw},
+    {"rotation", lua_lcd_rotation},
+    {"invert", lua_lcd_invert},
+    {"backlight", lua_lcd_backlight},
+    {"status", lua_lcd_status},
+    {NULL, NULL}
+};
+
+int luaopen_lcd(lua_State *L)
+{
+    luaL_newlib(L, lcd_funcs);
     return 1;
 }
