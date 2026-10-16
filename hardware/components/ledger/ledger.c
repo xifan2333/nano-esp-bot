@@ -166,3 +166,11 @@ bool ledger_is_pin_claimed(int gpio_num)
     }
     return s_pins[gpio_num].owner != LEDGER_OWNER_NONE;
 }
+
+ledger_owner_t ledger_get_pin_owner(int gpio_num)
+{
+    if (!s_initialized || gpio_num < 0 || gpio_num >= LEDGER_MAX_PINS) {
+        return LEDGER_OWNER_NONE;
+    }
+    return s_pins[gpio_num].owner;
+}
