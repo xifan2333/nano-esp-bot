@@ -371,8 +371,146 @@ void chal_button_teardown(void)
     }
 }
 
-int luaopen_button(lua_State *L)
+static const char *event_to_string(chal_button_event_type_t ev)
+{
+    switch (ev) {
+    case CHAL_BUTTON_EVENT_PRESS:        return "press";
+    case CHAL_BUTTON_EVENT_RELEASE:      return "release";
+    case CHAL_BUTTON_EVENT_CLICK:        return "click";
+    case CHAL_BUTTON_EVENT_DOUBLE_CLICK: return "double_click";
+    case CHAL_BUTTON_EVENT_LONG_PRESS:   return "long_press";
+    default:                             return "unknown";
+    }
+}
+
+static int lua_button_init(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    chal_button_config_t cfg = {
+        .active_low = true,
+        .pull_up = true,
+        .pull_down = false,
+        .long_press_ms = BUTTON_DEFAULT_LONG_PRESS_MS,
+        .double_click_ms = BUTTON_DEFAULT_DOUBLE_CLICK_MS,
+    };
+
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "active_low");
+        if (!lua_isnil(L, -1)) {
+            cfg.active_low = lua_toboolean(L, -1);
+            cfg.pull_up = cfg.active_low;
+            cfg.pull_down = !cfg.active_low;
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 2, "pull_up");
+        if (!lua_isnil(L, -1)) {
+            cfg.pull_up = lua_toboolean(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 2, "pull_down");
+        if (!lua_isnil(L, -1)) {
+            cfg.pull_down = lua_toboolean(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 2, "long_press_ms");
+        if (!lua_isnil(L, -1)) {
+            cfg.long_press_ms = (uint32_t)luaL_checkinteger(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 2, "double_click_ms");
+        if (!lua_isnil(L, -1)) {
+            cfg.double_click_ms = (uint32_t)luaL_checkinteger(L, -1);
+        }
+        lua_pop(L, 1);
+    }
+
+    esp_err_t err = chal_button_init_pin(pin, &cfg);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_button_deinit(lua_State *L)
+{
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) {
+        int pin = (int)luaL_checkinteger(L, 1);
+        chal_button_deinit_pin(pin);
+    } else {
+        chal_button_teardown();
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_button_recv(lua_State *L)
+{
+    uint32_t timeout_ms = (uint32_t)luaL_optinteger(L, 1, 0);
+    chal_button_event_t ev;
+
+    if (!chal_button_recv(&ev, timeout_ms)) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_newtable(L);
+    lua_pushinteger(L, ev.pin);
+    lua_setfield(L, -2, "pin");
+    lua_pushstring(L, event_to_string(ev.event));
+    lua_setfield(L, -2, "event");
+    lua_pushinteger(L, ev.press_duration_ms);
+    lua_setfield(L, -2, "duration_ms");
+    return 1;
+}
+
+static int lua_button_is_pressed(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, chal_button_is_pressed(pin));
+    return 1;
+}
+
+static int lua_button_status(lua_State *L)
 {
     lua_newtable(L);
+
+    if (s_button_mutex && xSemaphoreTake(s_button_mutex, portMAX_DELAY) == pdTRUE) {
+        for (int i = 0; i < BUTTON_MAX_PINS; i++) {
+            if (s_buttons[i].active) {
+                lua_pushinteger(L, s_buttons[i].pin);
+                lua_newtable(L);
+                lua_pushboolean(L, s_buttons[i].config.active_low);
+                lua_setfield(L, -2, "active_low");
+                lua_pushboolean(L, s_buttons[i].is_pressed_debounced);
+                lua_setfield(L, -2, "pressed");
+                lua_settable(L, -3);
+            }
+        }
+        xSemaphoreGive(s_button_mutex);
+    }
+
+    return 1;
+}
+
+static const luaL_Reg button_funcs[] = {
+    {"init", lua_button_init},
+    {"deinit", lua_button_deinit},
+    {"recv", lua_button_recv},
+    {"is_pressed", lua_button_is_pressed},
+    {"status", lua_button_status},
+    {NULL, NULL}
+};
+
+int luaopen_button(lua_State *L)
+{
+    luaL_newlib(L, button_funcs);
     return 1;
 }
