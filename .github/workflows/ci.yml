@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -20,10 +23,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup mise and run quality checks
+      - name: Setup mise and install tools
         uses: jdx/mise-action@v2
         with:
-          version: 2026.9.17
+          install_args: "hk"
+          cache: true
 
       - name: Run repository health checks
         run: mise run check
