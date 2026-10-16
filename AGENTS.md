@@ -43,6 +43,9 @@ mise run hw:monitor     # Open serial monitor
 mise run check          # Full repository validation (for CI)
 ```
 
+The local device toolchain is pinned in `.mise.toml` (`pipx:esptool`, `pipx:esp-idf-monitor`).
+`mise install` is all that is needed; no local ESP-IDF SDK or build environment exists.
+
 ---
 
 ## 4. Inviolable Red Lines (Hard Constraints)

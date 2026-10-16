@@ -49,7 +49,11 @@ mise run check
 # For local hardware testing, use:
 mise run hw:download  # Download built firmware binaries from CI
 mise run hw:flash     # Flash downloaded firmware via esptool
+mise run hw:monitor   # Open the serial monitor via idf-monitor
 ```
+
+The local device toolchain (`esptool`, `esp-idf-monitor`) is pinned in `.mise.toml` and installed by
+`mise install`. No local ESP-IDF SDK installation or environment export is required.
 
 ---
 

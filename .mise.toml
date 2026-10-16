@@ -35,10 +35,9 @@ run = "gh run download -n nano-esp-bot-firmware -D ${FIRMWARE_DIR:-dist/firmware
 [tasks."hw:flash"]
 description = "Flash the downloaded firmware to a connected ESP32-S3"
 run = """
-esptool.py --chip esp32s3 \
-  -p ${ESPPORT:-/dev/ttyACM0} -b ${ESPBAUD:-460800} \
-  --flash_mode dio --flash_size 16MB --flash_freq 80m \
-  write_flash \
+esptool --chip esp32s3 \
+  --port ${ESPPORT:-/dev/ttyACM0} --baud ${ESPBAUD:-460800} \
+  write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
   0x0 ${FIRMWARE_DIR:-dist/firmware}/hardware/build/bootloader/bootloader.bin \
   0x8000 ${FIRMWARE_DIR:-dist/firmware}/hardware/build/partition_table/partition-table.bin \
   0x10000 ${FIRMWARE_DIR:-dist/firmware}/hardware/build/nano-esp-bot-hw.bin
