@@ -27,6 +27,45 @@ static void gpio_require_script_pin(lua_State *L, lua_Integer pin)
     }
 }
 
+typedef struct {
+    const char *name;
+    gpio_mode_t mode;
+    gpio_pullup_t pull_up_en;
+    gpio_pulldown_t pull_down_en;
+    ledger_pin_mode_t ledger_mode;
+} gpio_mode_entry_t;
+
+/*
+ * Static table mapping user mode strings to C-HAL and ledger configuration.
+ * INPUT_OUTPUT (rather than OUTPUT) keeps the input path enabled so
+ * gpio_get_level() reports the real pad level on output pins.
+ */
+static const gpio_mode_entry_t GPIO_MODE_TABLE[] = {
+    {"out",            GPIO_MODE_INPUT_OUTPUT, GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_DISABLE, LEDGER_PIN_MODE_GPIO_OUT},
+    {"output",         GPIO_MODE_INPUT_OUTPUT, GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_DISABLE, LEDGER_PIN_MODE_GPIO_OUT},
+    {"in",             GPIO_MODE_INPUT,        GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_DISABLE, LEDGER_PIN_MODE_GPIO_IN},
+    {"input",          GPIO_MODE_INPUT,        GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_DISABLE, LEDGER_PIN_MODE_GPIO_IN},
+    {"input_pullup",   GPIO_MODE_INPUT,        GPIO_PULLUP_ENABLE,  GPIO_PULLDOWN_DISABLE, LEDGER_PIN_MODE_GPIO_IN},
+    {"in_pullup",      GPIO_MODE_INPUT,        GPIO_PULLUP_ENABLE,  GPIO_PULLDOWN_DISABLE, LEDGER_PIN_MODE_GPIO_IN},
+    {"input_pulldown", GPIO_MODE_INPUT,        GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_ENABLE,  LEDGER_PIN_MODE_GPIO_IN},
+    {"in_pulldown",    GPIO_MODE_INPUT,        GPIO_PULLUP_DISABLE, GPIO_PULLDOWN_ENABLE,  LEDGER_PIN_MODE_GPIO_IN},
+};
+
+static const size_t GPIO_MODE_TABLE_SIZE = sizeof(GPIO_MODE_TABLE) / sizeof(GPIO_MODE_TABLE[0]);
+
+static const gpio_mode_entry_t *find_gpio_mode_entry(const char *mode_str)
+{
+    if (mode_str == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0; i < GPIO_MODE_TABLE_SIZE; i++) {
+        if (strcmp(GPIO_MODE_TABLE[i].name, mode_str) == 0) {
+            return &GPIO_MODE_TABLE[i];
+        }
+    }
+    return NULL;
+}
+
 static int l_gpio_mode(lua_State *L)
 {
     lua_Integer pin = luaL_checkinteger(L, 1);
@@ -36,34 +75,18 @@ static int l_gpio_mode(lua_State *L)
         return luaL_error(L, "invalid GPIO pin %d", (int)pin);
     }
 
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << pin),
-        .intr_type = GPIO_INTR_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-    };
-
-    ledger_pin_mode_t lmode;
-    if (strcmp(mode_str, "out") == 0 || strcmp(mode_str, "output") == 0) {
-        /* INPUT_OUTPUT (rather than OUTPUT) keeps the input path enabled so
-         * gpio_get_level() reports the real pad level. That makes gpio.read()
-         * and gpio.toggle() behave correctly on output pins. */
-        io_conf.mode = GPIO_MODE_INPUT_OUTPUT;
-        lmode = LEDGER_PIN_MODE_GPIO_OUT;
-    } else if (strcmp(mode_str, "in") == 0 || strcmp(mode_str, "input") == 0) {
-        io_conf.mode = GPIO_MODE_INPUT;
-        lmode = LEDGER_PIN_MODE_GPIO_IN;
-    } else if (strcmp(mode_str, "input_pullup") == 0 || strcmp(mode_str, "in_pullup") == 0) {
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-        lmode = LEDGER_PIN_MODE_GPIO_IN;
-    } else if (strcmp(mode_str, "input_pulldown") == 0 || strcmp(mode_str, "in_pulldown") == 0) {
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
-        lmode = LEDGER_PIN_MODE_GPIO_IN;
-    } else {
+    const gpio_mode_entry_t *entry = find_gpio_mode_entry(mode_str);
+    if (entry == NULL) {
         return luaL_error(L, "invalid mode '%s' (use 'out', 'in', 'input_pullup', 'input_pulldown')", mode_str);
     }
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << pin),
+        .mode = entry->mode,
+        .intr_type = GPIO_INTR_DISABLE,
+        .pull_down_en = entry->pull_down_en,
+        .pull_up_en = entry->pull_up_en,
+    };
 
     /* Re-configuring a pin the script already owns is allowed: drop the old
      * claim first so a mode change does not fail as ESP_ERR_INVALID_STATE. */
@@ -72,7 +95,7 @@ static int l_gpio_mode(lua_State *L)
     }
 
     /* Safety check with Resource Ledger */
-    esp_err_t err = ledger_claim_pin((int)pin, LEDGER_OWNER_SCRIPT, lmode, "lua_gpio");
+    esp_err_t err = ledger_claim_pin((int)pin, LEDGER_OWNER_SCRIPT, entry->ledger_mode, "lua_gpio");
     if (err != ESP_OK) {
         return luaL_error(L, "pin %d rejected by ledger (err %d: reserved by flash/psram/usb or already claimed)", (int)pin, (int)err);
     }
