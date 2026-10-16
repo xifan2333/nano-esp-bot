@@ -22,6 +22,7 @@
 #include "chal_led_strip.h"
 #include "chal_ir.h"
 #include "chal_i2c.h"
+#include "chal_adc.h"
 
 static const char *TAG = "nano-core";
 
@@ -39,6 +40,7 @@ static void on_supervisor_break(void)
     chal_led_strip_teardown();
     chal_ir_teardown();
     chal_i2c_teardown();
+    chal_adc_teardown();
 }
 
 static void init_script_task(void *pvParameters)
@@ -98,6 +100,7 @@ void app_main(void)
     ESP_ERROR_CHECK(sandbox_register_module("led_strip", luaopen_led_strip));
     ESP_ERROR_CHECK(sandbox_register_module("ir", luaopen_ir));
     ESP_ERROR_CHECK(sandbox_register_module("i2c", luaopen_i2c));
+    ESP_ERROR_CHECK(sandbox_register_module("adc", luaopen_adc));
     ESP_ERROR_CHECK(rpc_init());
 
     if (storage_file_exists("init.lua")) {
