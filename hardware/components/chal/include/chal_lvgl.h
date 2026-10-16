@@ -48,6 +48,16 @@ bool chal_lvgl_is_initialized(void);
 esp_err_t chal_lvgl_step(uint32_t elapsed_ms);
 
 /**
+ * @brief Acquire LVGL thread-safety mutex.
+ */
+void chal_lvgl_lock(void);
+
+/**
+ * @brief Release LVGL thread-safety mutex.
+ */
+void chal_lvgl_unlock(void);
+
+/**
  * @brief Emergency teardown hook for supervisor break / abort.
  */
 void chal_lvgl_teardown(void);

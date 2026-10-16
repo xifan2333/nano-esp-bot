@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "chal_lcd.h"
 #include "lauxlib.h"
@@ -25,14 +26,17 @@ static void *s_disp_buf2 = NULL;
 static uint32_t s_disp_buf_size_bytes = 0;
 static uint32_t s_tick_period_ms = 10;
 
+static uint32_t lvgl_tick_get_cb(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    int x = area->x1;
-    int y = area->y1;
-    int w = area->x2 - area->x1 + 1;
-    int h = area->y2 - area->y1 + 1;
+    int32_t w = lv_area_get_width(area);
+    int32_t h = lv_area_get_height(area);
 
-    esp_err_t err = chal_lcd_draw_bitmap(x, y, w, h, (const uint16_t *)px_map);
+    esp_err_t err = chal_lcd_draw_bitmap(area->x1, area->y1, (int)w, (int)h, (const uint16_t *)px_map);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "chal_lcd_draw_bitmap failed during flush: %s", esp_err_to_name(err));
     }
@@ -46,15 +50,33 @@ static void lvgl_task(void *pvParameters)
     ESP_LOGI(TAG, "LVGL background task started (period: %lu ms)", (unsigned long)s_tick_period_ms);
 
     while (s_lvgl_initialized) {
+        uint32_t delay_ms = s_tick_period_ms;
         if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            lv_timer_handler();
+            uint32_t next_ms = lv_timer_handler();
             xSemaphoreGive(s_lvgl_mutex);
+            if (next_ms > 0 && next_ms < delay_ms) {
+                delay_ms = next_ms;
+            }
         }
-        vTaskDelay(pdMS_TO_TICKS(s_tick_period_ms));
+        vTaskDelay(pdMS_TO_TICKS(delay_ms > 0 ? delay_ms : 1));
     }
 
     ESP_LOGI(TAG, "LVGL background task terminated");
     vTaskDelete(NULL);
+}
+
+void chal_lvgl_lock(void)
+{
+    if (s_lvgl_mutex) {
+        xSemaphoreTake(s_lvgl_mutex, portMAX_DELAY);
+    }
+}
+
+void chal_lvgl_unlock(void)
+{
+    if (s_lvgl_mutex) {
+        xSemaphoreGive(s_lvgl_mutex);
+    }
 }
 
 esp_err_t chal_lvgl_init(const chal_lvgl_config_t *config)
@@ -85,6 +107,7 @@ esp_err_t chal_lvgl_init(const chal_lvgl_config_t *config)
     bool auto_start_task = config ? config->auto_start_task : true;
 
     lv_init();
+    lv_tick_set_cb(lvgl_tick_get_cb);
 
     // Allocate draw buffer in DMA-capable internal SRAM
     size_t buf_pixels = (size_t)width * buffer_lines;
@@ -96,14 +119,24 @@ esp_err_t chal_lvgl_init(const chal_lvgl_config_t *config)
     }
     if (!s_disp_buf1) {
         xSemaphoreGive(s_lvgl_mutex);
-        ESP_LOGE(TAG, "Failed to allocate LVGL draw buffer (%lu bytes)", (unsigned long)s_disp_buf_size_bytes);
+        ESP_LOGE(TAG, "Failed to allocate LVGL draw buffer 1 (%lu bytes)", (unsigned long)s_disp_buf_size_bytes);
         return ESP_ERR_NO_MEM;
+    }
+
+    // Try allocating double buffer for smooth DMA pipelining
+    s_disp_buf2 = heap_caps_malloc(s_disp_buf_size_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!s_disp_buf2) {
+        s_disp_buf2 = malloc(s_disp_buf_size_bytes);
     }
 
     s_lvgl_disp = lv_display_create(width, height);
     if (!s_lvgl_disp) {
         free(s_disp_buf1);
         s_disp_buf1 = NULL;
+        if (s_disp_buf2) {
+            free(s_disp_buf2);
+            s_disp_buf2 = NULL;
+        }
         xSemaphoreGive(s_lvgl_mutex);
         ESP_LOGE(TAG, "Failed to create LVGL display");
         return ESP_FAIL;
@@ -132,7 +165,8 @@ esp_err_t chal_lvgl_init(const chal_lvgl_config_t *config)
     }
 
     xSemaphoreGive(s_lvgl_mutex);
-    ESP_LOGI(TAG, "LVGL initialized successfully (%dx%d, buf_lines=%d)", width, height, buffer_lines);
+    ESP_LOGI(TAG, "LVGL initialized successfully (%dx%d, buf_lines=%d, double_buf=%s)",
+             width, height, buffer_lines, s_disp_buf2 ? "true" : "false");
     return ESP_OK;
 }
 
@@ -154,6 +188,7 @@ esp_err_t chal_lvgl_deinit(void)
     }
 
     if (s_lvgl_disp) {
+        lv_obj_clean(lv_screen_active());
         lv_display_delete(s_lvgl_disp);
         s_lvgl_disp = NULL;
     }
@@ -338,6 +373,14 @@ esp_err_t chal_lvgl_step(uint32_t elapsed_ms)
 {
     (void)elapsed_ms;
     return ESP_ERR_NOT_SUPPORTED;
+}
+
+void chal_lvgl_lock(void)
+{
+}
+
+void chal_lvgl_unlock(void)
+{
 }
 
 void chal_lvgl_teardown(void)
