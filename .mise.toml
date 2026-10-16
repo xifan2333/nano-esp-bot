@@ -1,6 +1,8 @@
 [tools]
 hk = "2.6.0"
 python = "3.11"
+"pipx:esptool" = "5.6.0"
+"pipx:esp-idf-monitor" = "1.10.0"
 
 [tasks.check]
 description = "Check all files via hk"
