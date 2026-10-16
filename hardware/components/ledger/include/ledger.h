@@ -75,6 +75,18 @@ uint32_t ledger_get_claimed_count(ledger_owner_t owner);
 bool ledger_is_pin_claimed(int gpio_num);
 
 /**
+ * @brief Get the current owner of a GPIO.
+ *
+ * Callers that mutate pin state on behalf of a specific owner (e.g. the Lua
+ * C-HAL) must verify ownership here first, otherwise they could bypass the
+ * reserved-pin policy by writing to an unclaimed or kernel-owned pin.
+ *
+ * @param gpio_num GPIO number.
+ * @return Owning identity, or LEDGER_OWNER_NONE when unclaimed/invalid.
+ */
+ledger_owner_t ledger_get_pin_owner(int gpio_num);
+
+/**
  * @brief Check if a GPIO is safe to claim (not reserved for Flash/PSRAM/USB).
  */
 bool ledger_is_pin_safe(int gpio_num);

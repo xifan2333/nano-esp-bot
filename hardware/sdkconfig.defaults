@@ -9,7 +9,9 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 # Console Output: USB Serial/JTAG (Native USB on ESP32-S3)
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
-# Flash settings: 4MB Flash / DIO / 80MHz
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Flash settings: 16MB Flash / DIO / 80MHz
+# The die on the reference board reports 16384 KB; declaring only 4MB hid 12MB
+# of usable Flash from the partition table and blocked OTA/large storage layouts.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
