@@ -261,8 +261,214 @@ void chal_http_teardown(void)
     }
 }
 
+static int extract_headers_from_table(lua_State *L, int table_idx, const char **headers, size_t max_pairs)
+{
+    size_t count = 0;
+    lua_pushnil(L);
+    while (lua_next(L, table_idx) != 0) {
+        if (count + 2 <= max_pairs * 2) {
+            headers[count++] = lua_tostring(L, -2);
+            headers[count++] = lua_tostring(L, -1);
+        }
+        lua_pop(L, 1);
+    }
+    return (int)count;
+}
+
+static int lua_http_request(lua_State *L)
+{
+    const char *url = NULL;
+    const char *method = "GET";
+    const char *body = NULL;
+    size_t body_len = 0;
+    int timeout_ms = 10000;
+    const char *headers[32] = {0};
+    size_t header_count = 0;
+
+    if (lua_istable(L, 1)) {
+        lua_getfield(L, 1, "url");
+        url = luaL_checkstring(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "method");
+        if (lua_isstring(L, -1)) {
+            method = lua_tostring(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "body");
+        if (lua_isstring(L, -1)) {
+            body = lua_tolstring(L, -1, &body_len);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "timeout");
+        if (lua_isinteger(L, -1)) {
+            timeout_ms = (int)lua_tointeger(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "headers");
+        if (lua_istable(L, -1)) {
+            header_count = extract_headers_from_table(L, lua_gettop(L), headers, 16);
+        }
+        lua_pop(L, 1);
+    } else {
+        url = luaL_checkstring(L, 1);
+        if (lua_istable(L, 2)) {
+            lua_getfield(L, 2, "method");
+            if (lua_isstring(L, -1)) method = lua_tostring(L, -1);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 2, "body");
+            if (lua_isstring(L, -1)) body = lua_tolstring(L, -1, &body_len);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 2, "timeout");
+            if (lua_isinteger(L, -1)) timeout_ms = (int)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+
+            lua_getfield(L, 2, "headers");
+            if (lua_istable(L, -1)) {
+                header_count = extract_headers_from_table(L, lua_gettop(L), headers, 16);
+            }
+            lua_pop(L, 1);
+        }
+    }
+
+    int status = 0;
+    char *resp_body = NULL;
+    size_t resp_len = 0;
+    esp_err_t err = chal_http_request(url, method, body, body_len, headers, header_count,
+                                      timeout_ms, &status, &resp_body, &resp_len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, status);
+    if (resp_body) {
+        lua_pushlstring(L, resp_body, resp_len);
+        free(resp_body);
+    } else {
+        lua_pushstring(L, "");
+    }
+    return 2;
+}
+
+static int lua_http_get(lua_State *L)
+{
+    const char *url = luaL_checkstring(L, 1);
+    int timeout_ms = 10000;
+    const char *headers[32] = {0};
+    size_t header_count = 0;
+
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "timeout");
+        if (lua_isinteger(L, -1)) timeout_ms = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 2, "headers");
+        if (lua_istable(L, -1)) {
+            header_count = extract_headers_from_table(L, lua_gettop(L), headers, 16);
+        }
+        lua_pop(L, 1);
+    }
+
+    int status = 0;
+    char *resp_body = NULL;
+    size_t resp_len = 0;
+    esp_err_t err = chal_http_request(url, "GET", NULL, 0, headers, header_count,
+                                      timeout_ms, &status, &resp_body, &resp_len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, status);
+    if (resp_body) {
+        lua_pushlstring(L, resp_body, resp_len);
+        free(resp_body);
+    } else {
+        lua_pushstring(L, "");
+    }
+    return 2;
+}
+
+static int lua_http_post(lua_State *L)
+{
+    const char *url = luaL_checkstring(L, 1);
+    size_t body_len = 0;
+    const char *body = luaL_optlstring(L, 2, "", &body_len);
+    int timeout_ms = 10000;
+    const char *headers[32] = {0};
+    size_t header_count = 0;
+
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "timeout");
+        if (lua_isinteger(L, -1)) timeout_ms = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 3, "headers");
+        if (lua_istable(L, -1)) {
+            header_count = extract_headers_from_table(L, lua_gettop(L), headers, 16);
+        }
+        lua_pop(L, 1);
+    }
+
+    int status = 0;
+    char *resp_body = NULL;
+    size_t resp_len = 0;
+    esp_err_t err = chal_http_request(url, "POST", body, body_len, headers, header_count,
+                                      timeout_ms, &status, &resp_body, &resp_len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, status);
+    if (resp_body) {
+        lua_pushlstring(L, resp_body, resp_len);
+        free(resp_body);
+    } else {
+        lua_pushstring(L, "");
+    }
+    return 2;
+}
+
+static int lua_http_download(lua_State *L)
+{
+    const char *url = luaL_checkstring(L, 1);
+    const char *filepath = luaL_checkstring(L, 2);
+    int timeout_ms = (int)luaL_optinteger(L, 3, 15000);
+
+    int status = 0;
+    size_t downloaded = 0;
+    esp_err_t err = chal_http_download(url, filepath, timeout_ms, &status, &downloaded);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+
+    lua_pushinteger(L, status);
+    lua_pushinteger(L, (lua_Integer)downloaded);
+    return 2;
+}
+
+static const luaL_Reg s_http_funcs[] = {
+    {"get", lua_http_get},
+    {"post", lua_http_post},
+    {"request", lua_http_request},
+    {"download", lua_http_download},
+    {NULL, NULL}
+};
+
 int luaopen_http(lua_State *L)
 {
-    lua_newtable(L);
+    luaL_newlib(L, s_http_funcs);
     return 1;
 }
