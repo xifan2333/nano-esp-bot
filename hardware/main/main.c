@@ -17,6 +17,7 @@
 #include "chal_ble_hid.h"
 #include "chal_ble.h"
 #include "chal_espnow.h"
+#include "chal_http.h"
 
 static const char *TAG = "nano-core";
 
@@ -29,6 +30,7 @@ static void on_supervisor_break(void)
     chal_ble_hid_teardown();
     chal_ble_teardown();
     chal_espnow_teardown();
+    chal_http_teardown();
 }
 
 static void init_script_task(void *pvParameters)
@@ -83,6 +85,7 @@ void app_main(void)
     ESP_ERROR_CHECK(sandbox_register_module("ble_hid", luaopen_ble_hid));
     ESP_ERROR_CHECK(sandbox_register_module("ble", luaopen_ble));
     ESP_ERROR_CHECK(sandbox_register_module("espnow", luaopen_espnow));
+    ESP_ERROR_CHECK(sandbox_register_module("http", luaopen_http));
     ESP_ERROR_CHECK(rpc_init());
 
     if (storage_file_exists("init.lua")) {
