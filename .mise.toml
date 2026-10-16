@@ -1,9 +1,8 @@
 [tools]
 hk = "2.6.0"
 python = "3.11"
-
-[env]
-_.source = { path = "scripts/export-idf.sh", tools = true }
+"pipx:esptool" = "5.6.0"
+"pipx:esp-idf-monitor" = "1.10.0"
 
 [tasks.check]
 description = "Check all files via hk"
@@ -25,18 +24,21 @@ run = "hk fix"
 description = "Auto-fix issues in all files via hk"
 run = "hk fix --all"
 
-[tasks."hw:build"]
-description = "Notice: Local hw:build is disabled by repository convention (delegated to CI)"
-run = "echo 'Error: Local firmware compilation is disabled by repository policy. Push your branch and verify via: gh pr checks' && exit 1"
-
 [tasks."hw:download"]
-description = "Download latest built firmware artifacts from GitHub Actions CI"
-run = "bash scripts/download-firmware.sh"
+description = "Download the latest CI-built firmware artifact into dist/firmware"
+run = "gh run download -n nano-esp-bot-firmware -D ${FIRMWARE_DIR:-dist/firmware}"
 
 [tasks."hw:flash"]
-description = "Flash downloaded firmware to connected ESP32-S3 via esptool"
-run = "bash scripts/flash-firmware.sh"
+description = "Flash the downloaded firmware to a connected ESP32-S3"
+run = """
+esptool --chip esp32s3 \
+  --port ${ESPPORT:-/dev/ttyACM0} --baud ${ESPBAUD:-460800} \
+  write-flash --flash-mode dio --flash-size 16MB --flash-freq 80m \
+  0x0 ${FIRMWARE_DIR:-dist/firmware}/bootloader/bootloader.bin \
+  0x8000 ${FIRMWARE_DIR:-dist/firmware}/partition_table/partition-table.bin \
+  0x10000 ${FIRMWARE_DIR:-dist/firmware}/nano-esp-bot-hw.bin
+"""
 
 [tasks."hw:monitor"]
 description = "Monitor ESP32-S3 serial output"
-run = "bash scripts/monitor-device.sh"
+run = "idf-monitor -p ${ESPPORT:-/dev/ttyACM0} -b ${ESPBAUD:-115200}"

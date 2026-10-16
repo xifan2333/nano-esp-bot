@@ -16,9 +16,12 @@ mise run check:changed  # Check modified files via native hk (fast local gate)
 mise run fix            # Auto-fix issues in modified files
 mise run hw:download    # Download built firmware artifacts from GitHub Actions CI
 mise run hw:flash       # Flash downloaded firmware to ESP32-S3 via lightweight esptool
-mise run hw:monitor     # Open serial monitor
+mise run hw:monitor     # Open serial monitor via idf-monitor
 mise run check          # Full repository validation (CI)
 ```
+
+The local device toolchain is pinned in `.mise.toml` (`pipx:esptool`, `pipx:esp-idf-monitor`);
+`mise install` is the only setup step. No local ESP-IDF SDK or build environment exists.
 
 ## Key Red Lines
 - Always develop via feature branches and Draft PRs with unchecked `- [ ]` tasks (`issue-pr` skill).
