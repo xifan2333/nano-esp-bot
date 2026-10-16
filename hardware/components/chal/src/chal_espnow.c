@@ -266,8 +266,195 @@ void chal_espnow_teardown(void)
     }
 }
 
-int luaopen_espnow(lua_State *L)
+static bool parse_mac_addr(const char *str, uint8_t mac[6])
+{
+    if (!str) return false;
+    int values[6];
+    if (sscanf(str, "%x:%x:%x:%x:%x:%x",
+               &values[0], &values[1], &values[2],
+               &values[3], &values[4], &values[5]) == 6) {
+        for (int i = 0; i < 6; i++) {
+            mac[i] = (uint8_t)values[i];
+        }
+        return true;
+    }
+    return false;
+}
+
+static void format_mac_addr(const uint8_t mac[6], char str[18])
+{
+    snprintf(str, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static int lua_espnow_init(lua_State *L)
+{
+    esp_err_t err = chal_espnow_init();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_espnow_deinit(lua_State *L)
+{
+    esp_err_t err = chal_espnow_deinit();
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_espnow_status(lua_State *L)
 {
     lua_newtable(L);
+    lua_pushboolean(L, chal_espnow_is_initialized());
+    lua_setfield(L, -2, "initialized");
+
+    uint8_t mac[6] = {0};
+    if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+        char mac_str[18];
+        format_mac_addr(mac, mac_str);
+        lua_pushstring(L, mac_str);
+        lua_setfield(L, -2, "mac");
+    }
+    return 1;
+}
+
+static int lua_espnow_add_peer(lua_State *L)
+{
+    const char *mac_str = luaL_checkstring(L, 1);
+    uint8_t mac[6];
+    if (!parse_mac_addr(mac_str, mac)) {
+        return luaL_error(L, "invalid MAC address format (expected xx:xx:xx:xx:xx:xx)");
+    }
+    uint8_t channel = (uint8_t)luaL_optinteger(L, 2, 0);
+    bool encrypt = lua_toboolean(L, 3);
+    const uint8_t *lmk = NULL;
+    if (encrypt && lua_isstring(L, 4)) {
+        size_t lmk_len = 0;
+        lmk = (const uint8_t *)lua_tolstring(L, 4, &lmk_len);
+        if (lmk_len != 16) {
+            return luaL_error(L, "LMK encryption key must be 16 bytes");
+        }
+    }
+
+    esp_err_t err = chal_espnow_add_peer(mac, channel, encrypt, lmk);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_espnow_del_peer(lua_State *L)
+{
+    const char *mac_str = luaL_checkstring(L, 1);
+    uint8_t mac[6];
+    if (!parse_mac_addr(mac_str, mac)) {
+        return luaL_error(L, "invalid MAC address format");
+    }
+    esp_err_t err = chal_espnow_del_peer(mac);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_espnow_is_peer(lua_State *L)
+{
+    const char *mac_str = luaL_checkstring(L, 1);
+    uint8_t mac[6];
+    if (!parse_mac_addr(mac_str, mac)) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    lua_pushboolean(L, chal_espnow_is_peer_exist(mac));
+    return 1;
+}
+
+static int lua_espnow_send(lua_State *L)
+{
+    int top = lua_gettop(L);
+    uint8_t mac[6];
+    const uint8_t *dest_mac = NULL;
+    size_t payload_len = 0;
+    const char *payload = NULL;
+
+    if (top == 1) {
+        payload = luaL_checklstring(L, 1, &payload_len);
+    } else {
+        if (!lua_isnil(L, 1)) {
+            const char *mac_str = luaL_checkstring(L, 1);
+            if (!parse_mac_addr(mac_str, mac)) {
+                return luaL_error(L, "invalid MAC address format");
+            }
+            dest_mac = mac;
+        }
+        payload = luaL_checklstring(L, 2, &payload_len);
+    }
+
+    if (payload_len > ESP_NOW_MAX_DATA_LEN) {
+        return luaL_error(L, "ESP-NOW payload exceeds maximum length (%d bytes)", ESP_NOW_MAX_DATA_LEN);
+    }
+
+    esp_err_t err = chal_espnow_send(dest_mac, (const uint8_t *)payload, payload_len);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_espnow_recv(lua_State *L)
+{
+    uint32_t timeout_ms = (uint32_t)luaL_optinteger(L, 1, 0);
+    uint8_t mac[6];
+    int8_t rssi = 0;
+    uint8_t buf[ESP_NOW_MAX_DATA_LEN];
+    size_t len = 0;
+
+    esp_err_t err = chal_espnow_recv(mac, &rssi, buf, sizeof(buf), &len, timeout_ms);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    char mac_str[18];
+    format_mac_addr(mac, mac_str);
+    lua_pushstring(L, mac_str);
+    lua_pushlstring(L, (const char *)buf, len);
+    lua_pushinteger(L, rssi);
+    return 3;
+}
+
+static const luaL_Reg s_espnow_funcs[] = {
+    {"init", lua_espnow_init},
+    {"deinit", lua_espnow_deinit},
+    {"status", lua_espnow_status},
+    {"add_peer", lua_espnow_add_peer},
+    {"del_peer", lua_espnow_del_peer},
+    {"is_peer", lua_espnow_is_peer},
+    {"send", lua_espnow_send},
+    {"recv", lua_espnow_recv},
+    {NULL, NULL}
+};
+
+int luaopen_espnow(lua_State *L)
+{
+    luaL_newlib(L, s_espnow_funcs);
     return 1;
 }
