@@ -236,10 +236,15 @@ esp_err_t chal_pwm_write_ratio(int gpio_num, float ratio)
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t chal_pwm_set_servo_angle(int gpio_num, float angle_deg)
+esp_err_t chal_pwm_set_servo_pulse(int gpio_num, float angle_deg, uint32_t min_us, uint32_t max_us)
 {
     if (angle_deg < 0.0f) angle_deg = 0.0f;
     if (angle_deg > 180.0f) angle_deg = 180.0f;
+    if (min_us == 0) min_us = 500;
+    if (max_us == 0) max_us = 2500;
+    if (min_us >= max_us || max_us > 20000) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     if (!chal_pwm_is_attached(gpio_num)) {
         esp_err_t err = chal_pwm_attach(gpio_num, 50, 14);
@@ -248,10 +253,15 @@ esp_err_t chal_pwm_set_servo_angle(int gpio_num, float angle_deg)
         }
     }
 
-    float pulse_us = 500.0f + (angle_deg / 180.0f) * 2000.0f;
+    float pulse_us = (float)min_us + (angle_deg / 180.0f) * (float)(max_us - min_us);
     float duty_ratio = pulse_us / 20000.0f;
 
     return chal_pwm_write_ratio(gpio_num, duty_ratio);
+}
+
+esp_err_t chal_pwm_set_servo_angle(int gpio_num, float angle_deg)
+{
+    return chal_pwm_set_servo_pulse(gpio_num, angle_deg, 500, 2500);
 }
 
 esp_err_t chal_pwm_detach(int gpio_num)
