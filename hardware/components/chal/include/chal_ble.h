@@ -27,7 +27,9 @@ esp_err_t chal_ble_adv_stop(void);
 
 esp_err_t chal_ble_gatts_register_service(const char *svc_uuid, const char *char_uuid, uint8_t properties, const uint8_t *init_val, size_t val_len);
 esp_err_t chal_ble_gatts_set_value(const char *char_uuid, const uint8_t *val, size_t len);
+esp_err_t chal_ble_gatts_get_value(const char *char_uuid, uint8_t *out_val, size_t max_len, size_t *out_len);
 esp_err_t chal_ble_gatts_notify(const char *char_uuid, const uint8_t *val, size_t len);
+void chal_ble_gatts_reset(void);
 
 void chal_ble_teardown(void);
 

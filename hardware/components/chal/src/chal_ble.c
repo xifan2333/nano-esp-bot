@@ -9,9 +9,11 @@
 #include "esp_log.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
+#include "host/ble_gatt.h"
 #include "host/ble_hs_adv.h"
 #include "host/ble_ibeacon.h"
 #include "host/ble_store.h"
+#include "host/ble_uuid.h"
 #include "lauxlib.h"
 
 static const char *TAG = "chal_ble";
@@ -225,6 +227,7 @@ esp_err_t chal_ble_deinit(void)
 
     if (s_ble_mutex && xSemaphoreTake(s_ble_mutex, portMAX_DELAY) == pdTRUE) {
         chal_ble_adv_stop();
+        chal_ble_gatts_reset();
         chal_nimble_deinit();
         s_inited = false;
         s_advertising = false;
@@ -394,35 +397,251 @@ void chal_ble_teardown(void)
 {
     if (s_inited) {
         chal_ble_adv_stop();
+        chal_ble_gatts_reset();
     }
 }
 
-// Stubs for Task 3 dynamic GATT
-esp_err_t chal_ble_gatts_register_service(const char *svc_uuid, const char *char_uuid,
+#define MAX_DYNAMIC_SERVICES 4
+#define MAX_DYNAMIC_CHARS    16
+#define MAX_CHAR_VAL_LEN     512
+
+typedef struct {
+    bool used;
+    ble_uuid_any_t uuid;
+    uint16_t val_handle;
+    uint8_t flags;
+    uint8_t val[MAX_CHAR_VAL_LEN];
+    size_t val_len;
+} chal_ble_char_t;
+
+typedef struct {
+    bool used;
+    ble_uuid_any_t uuid;
+    struct ble_gatt_svc_def svc_def[2];
+    struct ble_gatt_chr_def chr_defs[MAX_DYNAMIC_CHARS + 1];
+    size_t chr_count;
+} chal_ble_svc_t;
+
+static chal_ble_svc_t s_dynamic_svcs[MAX_DYNAMIC_SERVICES];
+static chal_ble_char_t s_dynamic_chrs[MAX_DYNAMIC_CHARS];
+
+static int dynamic_chr_access_cb(uint16_t conn_handle, uint16_t attr_handle,
+                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle;
+    (void)attr_handle;
+    chal_ble_char_t *chr = (chal_ble_char_t *)arg;
+    if (!chr || !chr->used) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+
+    switch (ctxt->op) {
+    case BLE_GATT_ACCESS_OP_READ_CHR: {
+        int rc = os_mbuf_append(ctxt->om, chr->val, (int)chr->val_len);
+        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+
+    case BLE_GATT_ACCESS_OP_WRITE_CHR: {
+        uint16_t out_len = 0;
+        int rc = ble_hs_mbuf_to_flat(ctxt->om, chr->val, sizeof(chr->val), &out_len);
+        if (rc != 0) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        chr->val_len = out_len;
+        return 0;
+    }
+
+    default:
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+}
+
+static chal_ble_char_t *find_dynamic_char(const char *uuid_str)
+{
+    ble_uuid_any_t target_uuid;
+    if (ble_uuid_from_str(&target_uuid, uuid_str) != 0) {
+        return NULL;
+    }
+    for (size_t i = 0; i < MAX_DYNAMIC_CHARS; i++) {
+        if (s_dynamic_chrs[i].used &&
+            ble_uuid_cmp(&s_dynamic_chrs[i].uuid.u, &target_uuid.u) == 0) {
+            return &s_dynamic_chrs[i];
+        }
+    }
+    return NULL;
+}
+
+void chal_ble_gatts_reset(void)
+{
+    for (size_t i = 0; i < MAX_DYNAMIC_SERVICES; i++) {
+        if (s_dynamic_svcs[i].used) {
+            ble_gatts_delete_svc(&s_dynamic_svcs[i].uuid.u);
+            s_dynamic_svcs[i].used = false;
+        }
+    }
+    for (size_t i = 0; i < MAX_DYNAMIC_CHARS; i++) {
+        s_dynamic_chrs[i].used = false;
+        s_dynamic_chrs[i].val_len = 0;
+    }
+}
+
+esp_err_t chal_ble_gatts_register_service(const char *svc_uuid_str, const char *char_uuid_str,
                                           uint8_t properties, const uint8_t *init_val, size_t val_len)
 {
-    (void)svc_uuid;
-    (void)char_uuid;
-    (void)properties;
-    (void)init_val;
-    (void)val_len;
-    return ESP_ERR_NOT_SUPPORTED;
+    if (!svc_uuid_str || !char_uuid_str) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = chal_ble_init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (xSemaphoreTake(s_ble_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    int svc_idx = -1;
+    for (size_t i = 0; i < MAX_DYNAMIC_SERVICES; i++) {
+        if (!s_dynamic_svcs[i].used) {
+            svc_idx = (int)i;
+            break;
+        }
+    }
+    if (svc_idx < 0) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    int chr_idx = -1;
+    for (size_t i = 0; i < MAX_DYNAMIC_CHARS; i++) {
+        if (!s_dynamic_chrs[i].used) {
+            chr_idx = (int)i;
+            break;
+        }
+    }
+    if (chr_idx < 0) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (ble_uuid_from_str(&s_dynamic_svcs[svc_idx].uuid, svc_uuid_str) != 0) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ble_uuid_from_str(&s_dynamic_chrs[chr_idx].uuid, char_uuid_str) != 0) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_dynamic_chrs[chr_idx].used = true;
+    s_dynamic_chrs[chr_idx].flags = properties;
+    if (init_val && val_len > 0) {
+        size_t cpy = val_len > sizeof(s_dynamic_chrs[chr_idx].val) ? sizeof(s_dynamic_chrs[chr_idx].val) : val_len;
+        memcpy(s_dynamic_chrs[chr_idx].val, init_val, cpy);
+        s_dynamic_chrs[chr_idx].val_len = cpy;
+    } else {
+        s_dynamic_chrs[chr_idx].val_len = 0;
+    }
+
+    chal_ble_svc_t *svc = &s_dynamic_svcs[svc_idx];
+    svc->used = true;
+    svc->chr_count = 1;
+
+    memset(svc->chr_defs, 0, sizeof(svc->chr_defs));
+    svc->chr_defs[0].uuid = &s_dynamic_chrs[chr_idx].uuid.u;
+    svc->chr_defs[0].access_cb = dynamic_chr_access_cb;
+    svc->chr_defs[0].arg = &s_dynamic_chrs[chr_idx];
+    svc->chr_defs[0].flags = properties;
+    svc->chr_defs[0].val_handle = &s_dynamic_chrs[chr_idx].val_handle;
+
+    memset(svc->svc_def, 0, sizeof(svc->svc_def));
+    svc->svc_def[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
+    svc->svc_def[0].uuid = &svc->uuid.u;
+    svc->svc_def[0].characteristics = svc->chr_defs;
+    svc->svc_def[1].type = BLE_GATT_SVC_TYPE_END;
+
+    int rc = ble_gatts_add_dynamic_svcs(svc->svc_def);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gatts_add_dynamic_svcs failed: %d", rc);
+        s_dynamic_chrs[chr_idx].used = false;
+        svc->used = false;
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_FAIL;
+    }
+
+    xSemaphoreGive(s_ble_mutex);
+    return ESP_OK;
 }
 
 esp_err_t chal_ble_gatts_set_value(const char *char_uuid, const uint8_t *val, size_t len)
 {
-    (void)char_uuid;
-    (void)val;
-    (void)len;
-    return ESP_ERR_NOT_SUPPORTED;
+    if (!char_uuid) return ESP_ERR_INVALID_ARG;
+    if (xSemaphoreTake(s_ble_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    chal_ble_char_t *chr = find_dynamic_char(char_uuid);
+    if (!chr) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    size_t copy_len = len > sizeof(chr->val) ? sizeof(chr->val) : len;
+    if (val && copy_len > 0) {
+        memcpy(chr->val, val, copy_len);
+        chr->val_len = copy_len;
+    } else {
+        chr->val_len = 0;
+    }
+    xSemaphoreGive(s_ble_mutex);
+    return ESP_OK;
+}
+
+esp_err_t chal_ble_gatts_get_value(const char *char_uuid, uint8_t *out_val, size_t max_len, size_t *out_len)
+{
+    if (!char_uuid || !out_val || !out_len) return ESP_ERR_INVALID_ARG;
+    if (xSemaphoreTake(s_ble_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    chal_ble_char_t *chr = find_dynamic_char(char_uuid);
+    if (!chr) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    size_t cpy = chr->val_len > max_len ? max_len : chr->val_len;
+    memcpy(out_val, chr->val, cpy);
+    *out_len = cpy;
+    xSemaphoreGive(s_ble_mutex);
+    return ESP_OK;
 }
 
 esp_err_t chal_ble_gatts_notify(const char *char_uuid, const uint8_t *val, size_t len)
 {
-    (void)char_uuid;
-    (void)val;
-    (void)len;
-    return ESP_ERR_NOT_SUPPORTED;
+    if (!char_uuid) return ESP_ERR_INVALID_ARG;
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_ble_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    chal_ble_char_t *chr = find_dynamic_char(char_uuid);
+    if (!chr) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (val && len > 0) {
+        size_t cpy = len > sizeof(chr->val) ? sizeof(chr->val) : len;
+        memcpy(chr->val, val, cpy);
+        chr->val_len = cpy;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(chr->val, (uint16_t)chr->val_len);
+    if (!om) {
+        xSemaphoreGive(s_ble_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    int rc = ble_gatts_notify_custom(s_conn_handle, chr->val_handle, om);
+    xSemaphoreGive(s_ble_mutex);
+    return rc == 0 ? ESP_OK : ESP_FAIL;
 }
 
 int luaopen_ble(lua_State *L)
