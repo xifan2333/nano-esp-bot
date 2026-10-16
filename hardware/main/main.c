@@ -63,21 +63,19 @@ void app_main(void)
     /* 1. Initialize Hardware Resource Ledger */
     ESP_ERROR_CHECK(ledger_init());
 
-    /* 2. Initialize JSON-RPC 2.0 Engine & USB Listener */
-    ESP_ERROR_CHECK(rpc_init());
+    /* 2. Initialize Native SPIFFS Storage */
+    ESP_ERROR_CHECK(storage_init());
 
-    /* 3. Initialize Lua 5.4 VM Sandbox, Link Break Callback & Register RPC */
+    /* 3. Initialize Lua 5.4 VM Sandbox & Link Break Callback */
     ESP_ERROR_CHECK(sandbox_init());
     rpc_set_break_callback((rpc_break_callback_t)sandbox_break);
-    ESP_ERROR_CHECK(sandbox_register_rpc());
 
     /* 4. Register C-HAL Hardware Modules into Lua Runtime (ESP-Claw Model) */
     ESP_ERROR_CHECK(sandbox_register_module("gpio", luaopen_gpio));
     ESP_ERROR_CHECK(sandbox_register_module("delay", luaopen_delay));
 
-    /* 5. Initialize Native SPIFFS Storage & Register Storage RPCs */
-    ESP_ERROR_CHECK(storage_init());
-    ESP_ERROR_CHECK(storage_register_rpc());
+    /* 5. Initialize JSON-RPC 2.0 Engine & USB Listener (Pi-Style Table Primitives) */
+    ESP_ERROR_CHECK(rpc_init());
 
     /* 6. Appliance-First Boot: Detect and auto-execute /storage/init.lua */
     if (storage_file_exists("init.lua")) {
