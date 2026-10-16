@@ -94,7 +94,6 @@ static int l_gpio_mode(lua_State *L)
         ledger_release_pin((int)pin, LEDGER_OWNER_SCRIPT);
     }
 
-    /* Safety check with Resource Ledger */
     esp_err_t err = ledger_claim_pin((int)pin, LEDGER_OWNER_SCRIPT, entry->ledger_mode, "lua_gpio");
     if (err != ESP_OK) {
         return luaL_error(L, "pin %d rejected by ledger (err %d: reserved by flash/psram/usb or already claimed)", (int)pin, (int)err);

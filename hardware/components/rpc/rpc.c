@@ -124,10 +124,6 @@ static const char *rpc_param_get_string(const cJSON *params, int index, const ch
     return NULL;
 }
 
-/* =========================================================================
- * 7 Pi-Style Minimal Agent Primitives (+ ping)
- * ========================================================================= */
-
 static cJSON *handle_primitive_ping(const cJSON *params, int *error_code, char *error_msg, size_t error_msg_len)
 {
     (void)params;
@@ -177,7 +173,6 @@ static cJSON *handle_primitive_info(const cJSON *params, int *error_code, char *
     cJSON_AddNumberToObject(res, "rpc_stack_total", (double)RPC_TASK_STACK_SIZE);
     cJSON_AddNumberToObject(res, "rpc_stack_headroom", (double)rpc_get_task_stack_headroom());
 
-    /* Storage subsystem metrics */
     cJSON *storage_obj = cJSON_AddObjectToObject(res, "storage");
     if (storage_obj) {
         bool mounted = storage_is_mounted();
@@ -193,7 +188,6 @@ static cJSON *handle_primitive_info(const cJSON *params, int *error_code, char *
         }
     }
 
-    /* Sandbox Lua VM subsystem metrics */
     cJSON *sandbox_obj = cJSON_AddObjectToObject(res, "sandbox");
     if (sandbox_obj) {
         size_t used = 0, peak = 0, limit = 0;
@@ -416,10 +410,6 @@ static cJSON *handle_primitive_list(const cJSON *params, int *error_code, char *
     return result;
 }
 
-/* =========================================================================
- * Compile-time Table-Driven O(1) Dispatcher
- * ========================================================================= */
-
 typedef struct {
     const char *name;
     rpc_method_handler_t handler;
@@ -451,14 +441,14 @@ static const rpc_primitive_entry_t S_PRIMITIVE_LIST[] = {
  *   [13] "info"   (105 + 4 = 109 -> 13)
  */
 static const rpc_primitive_entry_t * const S_PRIMITIVE_TABLE[16] = {
-    [0]  = &S_PRIMITIVE_LIST[0], /* list */
-    [4]  = &S_PRIMITIVE_LIST[1], /* ping */
-    [6]  = &S_PRIMITIVE_LIST[2], /* read */
-    [7]  = &S_PRIMITIVE_LIST[3], /* break */
-    [9]  = &S_PRIMITIVE_LIST[4], /* exec */
-    [10] = &S_PRIMITIVE_LIST[5], /* delete */
-    [12] = &S_PRIMITIVE_LIST[6], /* write */
-    [13] = &S_PRIMITIVE_LIST[7], /* info */
+    [0]  = &S_PRIMITIVE_LIST[0],
+    [4]  = &S_PRIMITIVE_LIST[1],
+    [6]  = &S_PRIMITIVE_LIST[2],
+    [7]  = &S_PRIMITIVE_LIST[3],
+    [9]  = &S_PRIMITIVE_LIST[4],
+    [10] = &S_PRIMITIVE_LIST[5],
+    [12] = &S_PRIMITIVE_LIST[6],
+    [13] = &S_PRIMITIVE_LIST[7],
 };
 
 static rpc_method_handler_t rpc_find_primitive_handler(const char *method)
@@ -570,7 +560,6 @@ static void rpc_task(void *pvParameters)
         for (int i = 0; i < n; i++) {
             uint8_t ch = chunk[i];
 
-            // MicroPython style in-band Ctrl-C break (0x03)
             if (ch == 0x03) {
                 ESP_LOGI(TAG, "Ctrl-C (0x03) received, executing break");
                 if (s_break_cb) {
@@ -648,7 +637,6 @@ esp_err_t rpc_init(void)
         return ESP_OK;
     }
 
-    // Configure USB Serial JTAG Driver
     usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
     cfg.rx_buffer_size = RPC_LINE_BUF_SIZE;
     cfg.tx_buffer_size = RPC_LINE_BUF_SIZE;
@@ -661,7 +649,6 @@ esp_err_t rpc_init(void)
 
     s_initialized = true;
 
-    // Spawn background RPC task (Priority 10, Core 0)
     BaseType_t res = xTaskCreatePinnedToCore(
         rpc_task,
         "rpc_engine",

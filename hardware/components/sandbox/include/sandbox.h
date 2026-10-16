@@ -12,8 +12,8 @@
 extern "C" {
 #endif
 
-#define SANDBOX_DEFAULT_MEM_LIMIT   (64 * 1024)   /* 64 KB memory limit */
-#define SANDBOX_DEFAULT_INSN_QUOTA  100000        /* 100,000 instruction hook quota */
+#define SANDBOX_DEFAULT_MEM_LIMIT   (64 * 1024)
+#define SANDBOX_DEFAULT_INSN_QUOTA  100000
 #define SANDBOX_RESULT_MAX_LEN      512
 
 typedef struct {
