@@ -24,12 +24,10 @@ static esp_err_t resolve_path(const char *rel_path, char *out_full, size_t out_s
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Prevent directory traversal attacks */
     if (strstr(rel_path, "..") != NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Strip leading slash if present */
     while (*rel_path == '/') {
         rel_path++;
     }

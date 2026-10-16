@@ -10,14 +10,12 @@
 extern "C" {
 #endif
 
-// Standard JSON-RPC 2.0 Error Codes
 #define RPC_ERR_PARSE_ERROR      (-32700)
 #define RPC_ERR_INVALID_REQUEST  (-32600)
 #define RPC_ERR_METHOD_NOT_FOUND (-32601)
 #define RPC_ERR_INVALID_PARAMS   (-32602)
 #define RPC_ERR_INTERNAL_ERROR   (-32603)
 
-// Custom Bot Error Codes
 #define RPC_ERR_HARDWARE_BUSY    (-32001)
 #define RPC_ERR_PIN_CONFLICT     (-32002)
 #define RPC_ERR_TIMEOUT          (-32003)

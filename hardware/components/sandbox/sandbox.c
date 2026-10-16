@@ -119,13 +119,8 @@ static esp_err_t sandbox_reset_internal(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Open full standard libraries (base, package, coroutine, table, io, os, string, math, utf8, debug) */
     luaL_openlibs(s_L);
-
-    /* Preload and register external C-HAL modules */
     sandbox_apply_modules(s_L);
-
-    /* Configure instruction quota hook */
     lua_sethook(s_L, sandbox_quota_hook, LUA_MASKCOUNT, HOOK_STEP);
 
     ESP_LOGI(TAG, "Sandboxed Lua state initialized (limit: %zu bytes)", s_mem_mgr.mem_limit);
@@ -187,7 +182,6 @@ esp_err_t sandbox_register_module(const char *name, lua_CFunction open_fn)
         xSemaphoreTake(s_sandbox_mutex, portMAX_DELAY);
     }
 
-    /* Check if already registered */
     for (size_t i = 0; i < s_module_count; i++) {
         if (strcmp(s_modules[i].name, name) == 0) {
             s_modules[i].open_fn = open_fn;
@@ -255,18 +249,14 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result)
 
     xSemaphoreTake(s_sandbox_mutex, portMAX_DELAY);
 
-    /* Reset per-eval instruction counter and abort flag */
     s_insn_count = 0;
     s_abort_requested = false;
     lua_sethook(s_L, sandbox_quota_hook, LUA_MASKCOUNT, HOOK_STEP);
-
-    /* Clean stack */
     lua_settop(s_L, 0);
 
     size_t code_len = strlen(code);
     int load_status = LUA_OK;
 
-    /* Strategy 1: Try compiling as expression "return <code>;" */
     char expr_buf[1024];
     if (code_len < sizeof(expr_buf) - 16) {
         int expr_len = snprintf(expr_buf, sizeof(expr_buf), "return %s;", code);
@@ -275,9 +265,8 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result)
         load_status = LUA_ERRSYNTAX;
     }
 
-    /* Strategy 2: If expression fails with syntax error, compile as statement */
     if (load_status != LUA_OK) {
-        lua_pop(s_L, 1); /* Remove error string from stack */
+        lua_pop(s_L, 1);
         load_status = luaL_loadbuffer(s_L, code, code_len, "=eval");
     }
 
@@ -294,7 +283,6 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result)
         return ESP_OK;
     }
 
-    /* Execute compiled chunk */
     int pcall_status = lua_pcall(s_L, 0, LUA_MULTRET, 0);
 
     if (pcall_status == LUA_OK) {
@@ -354,7 +342,6 @@ esp_err_t sandbox_eval(const char *code, sandbox_result_t *out_result)
     out_result->mem_peak = s_mem_mgr.mem_peak;
     out_result->insn_count = s_insn_count;
 
-    /* Clean stack */
     lua_settop(s_L, 0);
 
     xSemaphoreGive(s_sandbox_mutex);

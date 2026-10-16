@@ -62,7 +62,6 @@ int luaopen_delay(lua_State *L)
 {
     luaL_newlib(L, delay_funcs);
 
-    /* Attach __call so `delay(ms)` behaves exactly like `delay.ms(ms)` */
     lua_createtable(L, 0, 1);
     lua_pushcfunction(L, l_delay_call);
     lua_setfield(L, -2, "__call");
