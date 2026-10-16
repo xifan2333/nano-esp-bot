@@ -320,8 +320,120 @@ void chal_pwm_teardown(void)
     }
 }
 
+static int lua_pwm_attach(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    uint32_t freq = (uint32_t)luaL_optinteger(L, 2, 1000);
+    uint8_t res = (uint8_t)luaL_optinteger(L, 3, 14);
+
+    esp_err_t err = chal_pwm_attach(pin, freq, res);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_pwm_write(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    esp_err_t err;
+
+    if (lua_isinteger(L, 2)) {
+        lua_Integer duty = lua_tointeger(L, 2);
+        err = chal_pwm_write_duty(pin, (uint32_t)(duty < 0 ? 0 : duty));
+    } else {
+        lua_Number ratio = luaL_checknumber(L, 2);
+        err = chal_pwm_write_ratio(pin, (float)ratio);
+    }
+
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_pwm_servo(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    lua_Number angle = luaL_checknumber(L, 2);
+    uint32_t min_us = (uint32_t)luaL_optinteger(L, 3, 500);
+    uint32_t max_us = (uint32_t)luaL_optinteger(L, 4, 2500);
+
+    esp_err_t err = chal_pwm_set_servo_pulse(pin, (float)angle, min_us, max_us);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_pwm_detach(lua_State *L)
+{
+    int pin = (int)luaL_checkinteger(L, 1);
+    esp_err_t err = chal_pwm_detach(pin);
+    if (err != ESP_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, esp_err_to_name(err));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int lua_pwm_status(lua_State *L)
+{
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) {
+        int pin = (int)luaL_checkinteger(L, 1);
+        bool attached = chal_pwm_is_attached(pin);
+        lua_newtable(L);
+        lua_pushboolean(L, attached);
+        lua_setfield(L, -2, "attached");
+        if (attached) {
+            lua_pushinteger(L, chal_pwm_get_duty(pin));
+            lua_setfield(L, -2, "duty");
+        }
+        return 1;
+    }
+
+    lua_newtable(L);
+    int count = 0;
+    if (s_pwm_mutex && xSemaphoreTake(s_pwm_mutex, portMAX_DELAY) == pdTRUE) {
+        for (int i = 0; i < PWM_MAX_CHANNELS; i++) {
+            if (s_channels[i].active) {
+                lua_newtable(L);
+                lua_pushinteger(L, s_channels[i].gpio_num);
+                lua_setfield(L, -2, "pin");
+                lua_pushinteger(L, s_channels[i].freq_hz);
+                lua_setfield(L, -2, "freq");
+                lua_pushinteger(L, s_channels[i].duty);
+                lua_setfield(L, -2, "duty");
+                lua_rawseti(L, -2, ++count);
+            }
+        }
+        xSemaphoreGive(s_pwm_mutex);
+    }
+    return 1;
+}
+
+static const luaL_Reg s_pwm_funcs[] = {
+    {"attach", lua_pwm_attach},
+    {"write", lua_pwm_write},
+    {"servo", lua_pwm_servo},
+    {"detach", lua_pwm_detach},
+    {"status", lua_pwm_status},
+    {NULL, NULL}
+};
+
 int luaopen_pwm(lua_State *L)
 {
-    lua_newtable(L);
+    luaL_newlib(L, s_pwm_funcs);
     return 1;
 }
